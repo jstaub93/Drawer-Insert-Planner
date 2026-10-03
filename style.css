@@ -222,6 +222,8 @@ select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px
 
 /* ---------- embedded in the store's order form (?embed=1) ---------- */
 #finish { display: none; }
-body.embed #finish { display: block; width: 100%; margin-bottom: 8px; }
-body.embed .masthead, body.embed .foot { display: none; }
+body.embed .masthead, body.embed .foot, body.embed #open-review { display: none; }
+body.embed { padding-bottom: 84px; }
+body.embed #finish { display: block; position: fixed; right: 20px; bottom: 18px; z-index: 50; width: auto; padding: 14px 30px; margin: 0; font-size: 16px; border-radius: 6px; box-shadow: 0 8px 22px rgba(16, 40, 58, .35); }
+body.embed #finish:hover { transform: translateY(-1px); }
 .estimate .btn { width: 100%; }
