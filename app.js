@@ -1277,8 +1277,28 @@ if (EMBED) {
       dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100,
       json: jsonText(), pdf: buf,
     }, '*', [buf]);
-    btn.textContent = 'Sent to the order form';
-    setTimeout(() => { btn.textContent = 'Use this design'; }, 2500);
+    showUpload('progress', 0);
+  });
+  // The order form reports its upload progress back; the pop-up closes itself once the files are up.
+  const ov = document.createElement('div');
+  ov.id = 'upload-overlay'; ov.hidden = true;
+  ov.innerHTML = '<div class="ov-card" role="status"><div class="ov-title"></div><div class="ov-bar"><i></i></div><div class="ov-sub"></div><button type="button" class="btn primary ov-retry" hidden>Try again</button></div>';
+  document.body.appendChild(ov);
+  const ovQ = s => ov.querySelector(s);
+  function showUpload(state, percent, text) {
+    ov.hidden = false;
+    ov.dataset.state = state;
+    ovQ('.ov-bar i').style.width = Math.max(4, Math.min(100, percent || 0)) + '%';
+    ovQ('.ov-title').textContent = state === 'done' ? 'Plan saved' : state === 'failed' ? 'Upload failed' : 'Saving your plan…';
+    ovQ('.ov-sub').textContent = text || (state === 'done' ? 'Closing…' : state === 'failed' ? '' : `Uploading your plan files${percent ? ` · ${Math.round(percent)}%` : ''}`);
+    ovQ('.ov-retry').hidden = state !== 'failed';
+  }
+  ovQ('.ov-retry').addEventListener('click', () => { ov.hidden = true; });
+  window.addEventListener('message', e => {
+    const m = e.data;
+    if (!m || m.type !== 'drawer-insert-upload') return;
+    if (m.state === 'slow') showUpload('progress', +ovQ('.ov-bar i').style.width.replace('%', ''), 'Still uploading. This can take a little longer on a slow connection.');
+    else showUpload(m.state, m.percent, m.text);
   });
   window.parent.postMessage({ type: 'drawer-insert-ready' }, '*');
 }

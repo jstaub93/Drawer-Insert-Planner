@@ -227,3 +227,15 @@ body.embed { padding-bottom: 84px; }
 body.embed #finish { display: block; position: fixed; right: 20px; bottom: 18px; z-index: 50; width: auto; padding: 14px 30px; margin: 0; font-size: 16px; border-radius: 6px; box-shadow: 0 8px 22px rgba(16, 40, 58, .35); }
 body.embed #finish:hover { transform: translateY(-1px); }
 .estimate .btn { width: 100%; }
+
+/* upload progress shown while the order form stores the plan files */
+#upload-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(16, 40, 58, .6); }
+#upload-overlay[hidden] { display: none; }
+#upload-overlay .ov-card { width: min(380px, 88vw); background: #fff; border-radius: 8px; padding: 26px 28px; text-align: center; box-shadow: 0 16px 40px rgba(0, 0, 0, .35); }
+#upload-overlay .ov-title { font-size: 20px; font-weight: 700; color: var(--ink); }
+#upload-overlay .ov-bar { height: 10px; margin: 16px 0 10px; background: #e1e8ed; border-radius: 6px; overflow: hidden; }
+#upload-overlay .ov-bar i { display: block; height: 100%; width: 4%; background: var(--accent); border-radius: 6px; transition: width .25s; }
+#upload-overlay[data-state="done"] .ov-bar i { background: #2e9d57; }
+#upload-overlay[data-state="failed"] .ov-bar i { background: #c0392b; }
+#upload-overlay .ov-sub { min-height: 18px; font-size: 14px; color: var(--ink-2); }
+#upload-overlay .ov-retry { margin-top: 16px; }
