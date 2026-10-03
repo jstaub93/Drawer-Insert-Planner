@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drawer Insert Planner</title>
+<meta name="description" content="Plan a custom-fit drawer insert: set the drawer size, divide the space, see the cost, and export the drawing and cut files.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='3' fill='%2310283a'/%3E%3Cpath d='M9 9h14v14H9zM16 9v14M9 16h14' stroke='%23d9a45b' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="3"/><path d="M9 9h14v14H9zM16 9v14M9 16h14"/></svg>
+    <div>
+      <b>Drawer Insert Planner</b>
+      <span>Custom-fit dividers, planned to the eighth of an inch</span>
+    </div>
+  </div>
+</header>
+
+<main class="bench">
+  <aside class="rail" aria-label="Drawer settings and estimate">
+
+    <section class="card" aria-labelledby="h-size">
+      <h2 id="h-size">Drawer interior</h2>
+      <p class="note">Measure inside the drawer box, in inches.</p>
+      <div class="fields">
+        <label for="dim-w">Width <small>side to side</small></label>
+        <select id="dim-w"></select>
+        <label for="dim-l">Length <small>front to back</small></label>
+        <select id="dim-l"></select>
+        <label for="dim-h">Height <small>floor to top</small></label>
+        <select id="dim-h"></select>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-stock">
+      <h2 id="h-stock">What gets built</h2>
+      <dl class="facts">
+        <dt>Sheet thickness</dt><dd id="stock-thickness"></dd>
+        <dt>Divider height</dt><dd id="stock-height"></dd>
+        <dt>Spaces</dt><dd id="stock-spaces"></dd>
+        <dt>Dividers</dt><dd id="stock-dividers"></dd>
+      </dl>
+    </section>
+
+    <section class="card estimate" aria-labelledby="h-est">
+      <h2 id="h-est">Estimated cost</h2>
+      <div class="total" id="price-total" aria-live="polite">$0.00</div>
+      <dl class="facts small">
+        <dt>Design fee</dt><dd id="price-fee">$0.00</dd>
+        <dt>Drawer size</dt><dd id="price-base">$0.00</dd>
+        <dt>Dividers</dt><dd id="price-material">$0.00</dd>
+        <dt id="price-assembly-label">Assembly</dt><dd id="price-assembly">$0.00</dd>
+      </dl>
+      <p class="note" id="est-note">Divide the drawer to get a cost.</p>
+      <button type="button" class="btn primary" id="finish">Use this design</button>
+      <button type="button" class="btn" id="open-review" disabled>Open the plan sheet</button>
+    </section>
+
+    <details class="card help" open>
+      <summary>Using the planner</summary>
+      <ul>
+        <li>Select any space on the plan and choose how to divide it.</li>
+        <li>Drag a divider to move it. Dividers snap to a sixteenth of an inch and line up with their neighbours.</li>
+        <li>To make two sizes equal, select a number inside one space, then a number inside another. They are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it.</li>
+        <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces.</li>
+        <li>Divide a space again to build grids and nested layouts.</li>
+        <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
+      </ul>
+    </details>
+
+    <details class="card help">
+      <summary>Measuring tips</summary>
+      <ol>
+        <li>Empty the drawer, then measure the inside floor from wall to wall in both directions.</li>
+        <li>For height, measure up to where the drawer above or the top rail starts.</li>
+        <li>Check a few spots, use the smallest number, and round down to the nearest ⅛″.</li>
+      </ol>
+    </details>
+  </aside>
+
+  <section class="plan" aria-label="Layout plan">
+    <div class="plan-bar">
+      <div class="tools" role="toolbar" aria-label="Plan tools">
+        <button type="button" class="tool" id="undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7L4 12l5 5M4 12h11a5 5 0 010 10h-3"/></svg>Undo</button>
+        <button type="button" class="tool" id="redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7l5 5-5 5M20 12H9a5 5 0 000 10h3"/></svg>Redo</button>
+        <button type="button" class="tool" id="clear" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 108-8M4 4v5h5"/></svg>Start over</button>
+      </div>
+      <p class="status" id="plan-status" aria-live="polite"></p>
+    </div>
+    <div class="stage" id="stage">
+      <div class="note-bar" id="note-bar" role="status" hidden></div>
+      <svg id="canvas" role="img" aria-label="Plan of the drawer from above. Select a space to divide it."></svg>
+      <div class="popover" id="popover" hidden role="dialog" aria-label="Divide this space">
+        <div class="pop-title">Divide this space</div>
+        <div class="pop-grid" id="pop-grid"></div>
+        <button type="button" class="pop-cancel" id="pop-cancel">Close</button>
+      </div>
+      <div class="popover" id="divpop" hidden role="dialog" aria-label="Divider options">
+        <div class="pop-title">Divider</div>
+        <div class="divpop-body">
+          <p class="divpop-sizes" id="divpop-sizes"></p>
+          <button type="button" class="btn danger" id="divpop-delete">Delete divider</button>
+          <p class="note small" id="divpop-delnote"></p>
+        </div>
+        <button type="button" class="pop-cancel" id="divpop-close">Close</button>
+      </div>
+      <div class="popover" id="numpop" hidden role="dialog" aria-label="Linked number">
+        <div class="pop-title">Linked number</div>
+        <div class="divpop-body">
+          <p class="note" id="numpop-note"></p>
+          <button type="button" class="btn primary" id="numpop-unlock">Unlock this number</button>
+          <button type="button" class="btn" id="numpop-link">Link to another number</button>
+        </div>
+        <button type="button" class="pop-cancel" id="numpop-close">Close</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">Prices shown match the store's order form. Sizes are in inches.</footer>
+
+<!-- Plan sheet -->
+<div class="modal-backdrop" id="review" hidden>
+  <div class="modal" role="dialog" aria-labelledby="rev-title">
+    <div class="modal-head">
+      <h2 id="rev-title">Plan sheet</h2>
+      <button type="button" class="icon-btn" id="rev-close" aria-label="Close">×</button>
+    </div>
+    <div id="rev-body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn primary" id="rev-pdf">Save as PDF</button>
+      <button type="button" class="btn" id="rev-svg">Drawing (SVG)</button>
+      <button type="button" class="btn" id="rev-png">Drawing (PNG)</button>
+      <button type="button" class="btn" id="rev-json">Plan data (JSON)</button>
+      <button type="button" class="btn" id="rev-csv">Parts list (CSV)</button>
+      <button type="button" class="btn" id="rev-copy-json">Copy JSON</button>
+      <button type="button" class="btn" id="rev-copy-csv">Copy CSV</button>
+      <button type="button" class="btn" id="rev-print">Print</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
