@@ -1349,18 +1349,26 @@ if (EMBED) {
   ov.innerHTML = '<div class="ov-card" role="status"><div class="ov-title"></div><div class="ov-bar"><i></i></div><div class="ov-sub"></div><button type="button" class="btn primary ov-retry" hidden>Try again</button></div>';
   document.body.appendChild(ov);
   const ovQ = s => ov.querySelector(s);
+  let doneTimer = 0;
   function showUpload(state, percent, text) {
+    clearTimeout(doneTimer);
     ov.hidden = false;
     ov.dataset.state = state;
     ovQ('.ov-bar i').style.width = Math.max(4, Math.min(100, percent || 0)) + '%';
     ovQ('.ov-title').textContent = state === 'done' ? 'Plan saved' : state === 'failed' ? 'Upload failed' : 'Saving your plan…';
     ovQ('.ov-sub').textContent = text || (state === 'done' ? 'Closing…' : state === 'failed' ? '' : `Uploading your plan files${percent ? ` · ${Math.round(percent)}%` : ''}`);
     ovQ('.ov-retry').hidden = state !== 'failed';
+    if (state === 'done') doneTimer = setTimeout(() => { ov.hidden = true; }, 1500);      // the pop-up closes itself; never leave this card behind
   }
   ovQ('.ov-retry').addEventListener('click', () => { ov.hidden = true; });
+  ov.addEventListener('click', () => { if (ov.dataset.state === 'done') ov.hidden = true; });
   window.addEventListener('message', e => {
     const m = e.data;
-    if (m && m.type === 'drawer-insert-collapse' && document.body.classList.contains('editor-full')) { setExpanded(false); return; }
+    if (m && m.type === 'drawer-insert-collapse') {            // the pop-up was closed: start tidy next time it opens
+      clearTimeout(doneTimer); ov.hidden = true; ask.hidden = true;
+      if (document.body.classList.contains('editor-full')) setExpanded(false);
+      return;
+    }
     if (!m || m.type !== 'drawer-insert-upload') return;
     if (m.state === 'slow') showUpload('progress', +ovQ('.ov-bar i').style.width.replace('%', ''), 'Still uploading. This can take a little longer on a slow connection.');
     else showUpload(m.state, m.percent, m.text);
