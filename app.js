@@ -973,7 +973,7 @@ function drawing() {
   R(2, titleTop, pageW - 4, titleH, { stroke: '#111', sw: 0.4 });
   T(6, titleTop + 8, 'Drawer insert plan, seen from above', 4.2, { bold: true });
   T(6, titleTop + 15, `Insert ${fmtEighths(state.dims.w)} × ${fmtEighths(state.dims.l)} × ${fmtEighths(state.dims.h)} in (width, length, height), for a drawer ${fmtEighths(state.drawer.w)} × ${fmtEighths(state.drawer.l)} × ${fmtEighths(state.drawer.h)} in inside`, 2.9);
-  T(6, titleTop + 20.5, `${sorted.length} spaces, ${physical.length} dividers, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
+  T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
   T(6, titleTop + 26, 'Each space shows width × length in inches.', 2.9, { fill: '#444' });
   T(6, titleTop + 38, `Scale 1:${ratio}. Print at 100%, not fit-to-page.`, 3.2, { bold: true });
 
@@ -1107,12 +1107,15 @@ const pdfCode = ch => {
   if (c === 0xD7 || c === 0xB7) return c;          // × and · exist in WinAnsi
   return c >= 32 && c <= 126 ? c : 63;
 };
-const pdfStr = s => [...String(s)].map(ch => {
+// The PDF's built-in font has no fraction characters: write them out ("5 1/2") instead of printing "?".
+const PDF_FRACTIONS = { '⅛': '1/8', '¼': '1/4', '⅜': '3/8', '½': '1/2', '⅝': '5/8', '¾': '3/4', '⅞': '7/8' };
+const pdfText = s => String(s).replace(/[⅛¼⅜½⅝¾⅞]/g, f => PDF_FRACTIONS[f]);
+const pdfStr = s => [...pdfText(s)].map(ch => {
   const c = pdfCode(ch);
   if (c === 40 || c === 41 || c === 92) return '\\' + String.fromCharCode(c);
   return c > 126 ? '\\' + c.toString(8).padStart(3, '0') : String.fromCharCode(c);
 }).join('');
-const pdfWidth = (s, size, bold) => [...String(s)].reduce((sum, ch) => {
+const pdfWidth = (s, size, bold) => [...pdfText(s)].reduce((sum, ch) => {
   const c = pdfCode(ch);
   return sum + (c === 0xD7 ? 584 : c === 0xB7 ? 278 : (bold ? HELV_B : HELV)[c - 32]);
 }, 0) * size / 1000;
