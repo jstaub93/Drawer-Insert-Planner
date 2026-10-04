@@ -813,8 +813,8 @@ function refresh() {
   $('#price-material').textContent = fmtMoney(pb.dividerCost);
   $('#price-dividers-label').textContent = divided ? `Dividers (${pb.dividers})` : 'Dividers';
   $('#plan-price').textContent = fmtMoney(pb.total);
-  $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Add dividers to see their cost.';
-  $('#open-review').disabled = !divided;
+  $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Divide the drawer to add dividers, or use it as an empty tray.';
+  $('#open-review').disabled = false;                 // an empty tray is a valid design
   $('#stock-thickness').textContent = `${WALL.toFixed(2)}″`;
   $('#stock-height').textContent = `${partH.toFixed(2)}″`;
   $('#stock-spaces').textContent = String(cells.length);
@@ -1319,9 +1319,8 @@ if (EMBED) {
     state.drawer = { w: w + 2 * state.gap, l: l + 2 * state.gap, h: h + state.gap };
     sizesChanged();
   });
-  on('#finish', 'click', e => {
-    const btn = e.currentTarget, pb = priceBreakdown();
-    if (!pb.dividers) { showNote('Add at least one divider before using this design.'); return; }
+  function sendPlan() {
+    const pb = priceBreakdown();
     const { W, L, H } = drawerSize();
     const pdf = makePlanPdf();
     const buf = pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength);
@@ -1332,7 +1331,18 @@ if (EMBED) {
       json: jsonText(), pdf: buf,
     }, '*', [buf]);
     showUpload('progress', 0);
+  }
+  // A layout with no dividers is allowed (an empty tray), but the customer is asked to confirm it.
+  const ask = document.createElement('div');
+  ask.id = 'confirm-overlay'; ask.hidden = true;
+  ask.innerHTML = '<div class="ov-card" role="alertdialog" aria-labelledby="ask-title"><div class="ov-title" id="ask-title">This layout is empty</div><div class="ov-sub">It has no dividers, so it will be built as a plain tray: a bottom and four walls. Use it anyway?</div><div class="ask-buttons"><button type="button" class="btn" id="ask-back">Keep designing</button><button type="button" class="btn primary" id="ask-yes">Yes, use an empty tray</button></div></div>';
+  document.body.appendChild(ask);
+  on('#finish', 'click', () => {
+    if (priceBreakdown().dividers) sendPlan(); else { ask.hidden = false; $('#ask-back').focus(); }
   });
+  on('#ask-back', 'click', () => { ask.hidden = true; });
+  on('#ask-yes', 'click', () => { ask.hidden = true; sendPlan(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !ask.hidden) { ask.hidden = true; e.stopImmediatePropagation(); } }, true);
   // The order form reports its upload progress back; the pop-up closes itself once the files are up.
   const ov = document.createElement('div');
   ov.id = 'upload-overlay'; ov.hidden = true;

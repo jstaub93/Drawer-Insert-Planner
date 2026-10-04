@@ -260,3 +260,12 @@ body.embed #finish { z-index: 70; }
 .insert-box span { font: 600 12px var(--font-body); color: var(--ink-2); letter-spacing: .04em; text-transform: uppercase; }
 .insert-box b { font: 700 19px var(--font-mono); color: var(--ink); }
 .insert-box small { font-size: 12px; color: var(--ink-2); line-height: 1.35; }
+
+/* "this layout is empty" confirmation in the embedded planner */
+#confirm-overlay { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; background: rgba(16, 40, 58, .6); }
+#confirm-overlay[hidden] { display: none; }
+#confirm-overlay .ov-card { width: min(420px, 90vw); background: #fff; border-radius: 8px; padding: 26px 28px; text-align: center; box-shadow: 0 16px 40px rgba(0, 0, 0, .35); }
+#confirm-overlay .ov-title { font-size: 20px; font-weight: 700; color: var(--ink); }
+#confirm-overlay .ov-sub { margin: 10px 0 18px; font-size: 14px; color: var(--ink-2); line-height: 1.45; }
+#confirm-overlay .ask-buttons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+#confirm-overlay .ask-buttons .btn { width: auto; padding: 10px 16px; }
