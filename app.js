@@ -25,7 +25,7 @@ const STORAGE_KEY = 'drawer-organizer-designer:v1';
 // Same price as the store's order form: the shop's production cost (acrylic, laser, labour, packaging),
 // grossed up so that advertising, card fees, customer service and the net profit target come out of each sale.
 // Rebuilt from pricing/cost_model.py; keep the two in step (the tests compare them).
-const PRICE = { k: 3.5087719, area: 0.037232142, cut: 0.011127944, top: 0.018389007, part: 1.1607143, pack: 0.014314236, fixed: 10.316667, minimum: 120 };
+const PRICE = { k: 3.5087719, area: 0.037232142, cut: 0.011127944, top: 0.018389007, part: 1.1607143, pack: 0.014314236, fixed: 10.316667, minimum: 0 };
 
 const FRACS = ['', '⅛', '¼', '⅜', '½', '⅝', '¾', '⅞'];
 
