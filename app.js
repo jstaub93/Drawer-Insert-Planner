@@ -22,8 +22,10 @@ const STORAGE_KEY = 'drawer-organizer-designer:v1';
 // Placeholder pricing. Replace with your real numbers.
 //   total = base + perSqIn x square inches of material (bottom panel + dividers)
 //                + perDivider x number of dividers (assembly and gluing time)
-// Same model as the store's option calculator: design fee + markup × (size charge + dividers).
-const PRICE = { designFee: 50, markup: 0.65 * 1.3, base: 60.99, perSqIn: 0.2, perCuIn: 0.06, perDividerSqIn: 0.2, perDivider: 4 };
+// Same price as the store's order form: the shop's production cost (acrylic, laser, labour, packaging),
+// grossed up so that advertising, card fees, customer service and the net profit target come out of each sale.
+// Rebuilt from pricing/cost_model.py; keep the two in step (the tests compare them).
+const PRICE = { k: 3.5087719, area: 0.037232142, cut: 0.011127944, top: 0.018389007, part: 1.1607143, pack: 0.014314236, fixed: 10.316667, minimum: 120 };
 
 const FRACS = ['', '⅛', '¼', '⅜', '½', '⅝', '¾', '⅞'];
 
@@ -140,17 +142,23 @@ function physicalDividers(divs) {
   return out.map(s => ({ axis: s.axis, pos: s.pos, start: s.start, length: s.end - s.start }));
 }
 
+function priceFor(W, L, H, N, DA) {
+  const h = H - WALL, S = h > 0 ? DA / h : 0;
+  const area = W * L + 2 * h * (L + W - 2 * WALL) + DA;                       // every part that gets cut
+  const cut = 6 * (W + L) - 8 * WALL + 8 * h + 2 * S + 2 * N * h;              // laser cutting length
+  const top = 2 * (L + W - 2 * WALL) + S;                                      // top edges to flame polish
+  const cost = PRICE.area * area + PRICE.cut * cut + PRICE.top * top + PRICE.part * (4 + N) + PRICE.pack * (W + 2) * (L + 2) + PRICE.fixed;
+  return Math.max(PRICE.minimum, PRICE.k * cost);
+}
 function priceBreakdown() {
-  const zero = { fee: 0, drawer: 0, material: 0, assembly: 0, dividers: 0, dividerArea: 0, total: 0 };
+  const zero = { drawer: 0, dividerCost: 0, dividers: 0, dividerArea: 0, total: 0 };
   if (!state.dims) return zero;
   const { W, L, H, partH } = drawerSize();
   const divs = physicalDividers(currentLayout().divs);
   const dividerArea = Math.round(divs.reduce((s, d) => s + d.length * partH, 0) * 100) / 100;   // the value the order form receives
-  const k = PRICE.markup;
-  const drawer = k * (PRICE.base + PRICE.perSqIn * W * L + PRICE.perCuIn * W * L * H);
-  const material = k * PRICE.perDividerSqIn * dividerArea;
-  const assembly = k * PRICE.perDivider * divs.length;
-  return { fee: PRICE.designFee, drawer, material, assembly, dividers: divs.length, dividerArea, total: PRICE.designFee + drawer + material + assembly };
+  const total = priceFor(W, L, H, divs.length, dividerArea);
+  const drawer = Math.min(total, priceFor(W, L, H, 0, 0));                    // the empty insert; the dividers account for the rest
+  return { drawer, dividerCost: total - drawer, dividers: divs.length, dividerArea, total };
 }
 const estimatePrice = () => priceBreakdown().total;
 
@@ -784,11 +792,9 @@ function refresh() {
   $('#redo').disabled = hist.i >= hist.stack.length - 1;
   $('#clear').disabled = isDefaultLayout();
   $('#price-total').textContent = fmtMoney(pb.total);
-  $('#price-fee').textContent = fmtMoney(pb.fee);
   $('#price-base').textContent = fmtMoney(pb.drawer);
-  $('#price-material').textContent = fmtMoney(pb.material);
-  $('#price-assembly').textContent = fmtMoney(pb.assembly);
-  $('#price-assembly-label').textContent = divided ? `Assembly (${pb.dividers} ${pb.dividers === 1 ? 'divider' : 'dividers'})` : 'Assembly';
+  $('#price-material').textContent = fmtMoney(pb.dividerCost);
+  $('#price-dividers-label').textContent = divided ? `Dividers (${pb.dividers})` : 'Dividers';
   $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Add dividers to see their cost.';
   $('#open-review').disabled = !divided;
   $('#stock-thickness').textContent = `${WALL.toFixed(2)}″`;
@@ -977,8 +983,7 @@ function designData() {
       label: labelFor(i), x_in: r(c.x), y_in: r(c.y), width_in: r(c.w), length_in: r(c.h),
     })),
     price_estimate: {
-      design_fee: r(priceBreakdown().fee), drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().material),
-      assembly: r(priceBreakdown().assembly), total: r(priceBreakdown().total),
+      drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
     },
     order_fields: { divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea },
   };
@@ -1013,10 +1018,8 @@ function sheetData() {
         ['Open spaces', String(data.compartments.length)],
       ] },
       { title: 'Cost estimate', right: [1], total: true, rows: [
-        ['Design fee', fmtMoney(pb.fee)],
-        ['Drawer size', fmtMoney(pb.drawer)],
-        [`Dividers (${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.material)],
-        [`Assembly (${pb.dividers} ${pb.dividers === 1 ? 'divider' : 'dividers'})`, fmtMoney(pb.assembly)],
+        ['Insert (bottom and outer walls)', fmtMoney(pb.drawer)],
+        [`Dividers (${pb.dividers}, ${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.dividerCost)],
         ['Estimated total', fmtMoney(pb.total)],
       ] },
       { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) },
