@@ -90,7 +90,11 @@
         <button type="button" class="tool" id="redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7l5 5-5 5M20 12H9a5 5 0 000 10h3"/></svg>Redo</button>
         <button type="button" class="tool" id="clear" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 108-8M4 4v5h5"/></svg>Start over</button>
       </div>
-      <p class="status" id="plan-status" aria-live="polite"></p>
+      <div class="bar-end">
+        <p class="status" id="plan-status" aria-live="polite"></p>
+        <span class="plan-price" id="plan-price" aria-live="polite"></span>
+        <button type="button" class="tool" id="expand" aria-pressed="false" title="Make the layout editor fill the whole window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span>Expand editor</span></button>
+      </div>
     </div>
     <div class="stage" id="stage">
       <div class="note-bar" id="note-bar" role="status" hidden></div>

@@ -239,3 +239,18 @@ body.embed #finish:hover { transform: translateY(-1px); }
 #upload-overlay[data-state="failed"] .ov-bar i { background: #c0392b; }
 #upload-overlay .ov-sub { min-height: 18px; font-size: 14px; color: var(--ink-2); }
 #upload-overlay .ov-retry { margin-top: 16px; }
+
+/* ---------- expanded layout editor ---------- */
+.bar-end { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+.plan-price { display: none; font: 700 15px var(--font-mono); color: var(--ink); }
+body.editor-full { overflow: hidden; }
+body.editor-full .masthead, body.editor-full .foot { display: none; }
+body.editor-full .plan { position: fixed; inset: 0; z-index: 60; border: 0; border-radius: 0; }
+body.editor-full .stage { flex: 1; height: auto; min-height: 0; border-radius: 0; }
+body.editor-full .plan-price { display: inline; }
+/* the side panels give way; only the "Use this design" button of the embedded planner stays */
+body.editor-full .rail > *:not(.estimate) { display: none; }
+body.editor-full .estimate { border: 0; background: none; padding: 0; margin: 0; box-shadow: none; height: 0; overflow: visible; }
+body.editor-full .estimate > *:not(#finish) { display: none; }
+body.embed #finish { z-index: 70; }
+@media (max-width: 900px) { body.editor-full .stage { height: auto; min-height: 0; } }

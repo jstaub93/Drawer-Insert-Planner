@@ -795,6 +795,7 @@ function refresh() {
   $('#price-base').textContent = fmtMoney(pb.drawer);
   $('#price-material').textContent = fmtMoney(pb.dividerCost);
   $('#price-dividers-label').textContent = divided ? `Dividers (${pb.dividers})` : 'Dividers';
+  $('#plan-price').textContent = fmtMoney(pb.total);
   $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Add dividers to see their cost.';
   $('#open-review').disabled = !divided;
   $('#stock-thickness').textContent = `${WALL.toFixed(2)}″`;
@@ -846,6 +847,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (!$('#review').hidden) $('#review').hidden = true;
     else if (pendingNum || transientNote) { pendingNum = null; transientNote = null; clearTimeout(noteTimer); refresh(); }
+    else if (!$('#popover').hidden || !$('#divpop').hidden || !$('#numpop').hidden) closePopover();
+    else if (document.body.classList.contains('editor-full')) setExpanded(false);
     else closePopover();
     return;
   }
@@ -857,6 +860,18 @@ document.addEventListener('keydown', e => {
 });
 
 new ResizeObserver(() => renderDrawer(canvas, { interactive: true })).observe(canvas);
+
+// The layout editor can fill the whole window for detailed work on a complicated layout.
+function setExpanded(on) {
+  document.body.classList.toggle('editor-full', on);
+  const btn = $('#expand');
+  btn.setAttribute('aria-pressed', String(on));
+  btn.querySelector('span').textContent = on ? 'Exit full screen' : 'Expand editor';
+  closePopover();
+  if (typeof EMBED !== 'undefined' && EMBED) window.parent.postMessage({ type: 'drawer-insert-fullscreen', on }, '*');   // the store's pop-up grows too
+  refresh();
+}
+$('#expand').addEventListener('click', () => setExpanded(!document.body.classList.contains('editor-full')));
 
 /* ---------- review / export ---------- */
 function labelFor(i) {
@@ -1299,9 +1314,11 @@ if (EMBED) {
   ovQ('.ov-retry').addEventListener('click', () => { ov.hidden = true; });
   window.addEventListener('message', e => {
     const m = e.data;
+    if (m && m.type === 'drawer-insert-collapse' && document.body.classList.contains('editor-full')) { setExpanded(false); return; }
     if (!m || m.type !== 'drawer-insert-upload') return;
     if (m.state === 'slow') showUpload('progress', +ovQ('.ov-bar i').style.width.replace('%', ''), 'Still uploading. This can take a little longer on a slow connection.');
     else showUpload(m.state, m.percent, m.text);
+    if (m.state === 'done' && document.body.classList.contains('editor-full')) setExpanded(false);
   });
   window.parent.postMessage({ type: 'drawer-insert-ready' }, '*');
 }
