@@ -254,3 +254,9 @@ body.editor-full .estimate { border: 0; background: none; padding: 0; margin: 0;
 body.editor-full .estimate > *:not(#finish) { display: none; }
 body.embed #finish { z-index: 70; }
 @media (max-width: 900px) { body.editor-full .stage { height: auto; min-height: 0; } }
+
+/* the insert size, after the safety gap */
+.insert-box { margin-top: 12px; padding: 10px 12px; border: 1px solid #b5d9d3; background: var(--accent-soft); border-radius: 4px; display: grid; gap: 2px; }
+.insert-box span { font: 600 12px var(--font-body); color: var(--ink-2); letter-spacing: .04em; text-transform: uppercase; }
+.insert-box b { font: 700 19px var(--font-mono); color: var(--ink); }
+.insert-box small { font-size: 12px; color: var(--ink-2); line-height: 1.35; }

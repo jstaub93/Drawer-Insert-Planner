@@ -28,7 +28,7 @@
 
     <section class="card" aria-labelledby="h-size">
       <h2 id="h-size">Drawer interior</h2>
-      <p class="note">Measure inside the drawer box, in inches.</p>
+      <p class="note">Measure inside the drawer box, in inches. We take off a small safety gap so the insert slides in easily.</p>
       <div class="fields">
         <label for="dim-w">Width <small>side to side</small></label>
         <select id="dim-w"></select>
@@ -36,6 +36,13 @@
         <select id="dim-l"></select>
         <label for="dim-h">Height <small>floor to top</small></label>
         <select id="dim-h"></select>
+        <label for="dim-gap">Safety gap <small>each side</small></label>
+        <select id="dim-gap"></select>
+      </div>
+      <div class="insert-box" aria-live="polite">
+        <span>Your insert will be</span>
+        <b id="insert-size"></b>
+        <small>width × length × height. The gap comes off each side of the width and length, and once off the height.</small>
       </div>
     </section>
 

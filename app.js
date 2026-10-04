@@ -32,7 +32,9 @@ const FRACS = ['', '⅛', '¼', '⅜', '½', '⅝', '¾', '⅞'];
 /* ---------- state ---------- */
 let nextId = 1;
 const state = {
-  dims: null,                     // { w, l, h } in eighths of an inch
+  dims: null,                     // the insert: { w, l, h } in eighths of an inch (the drawer interior less the safety gap)
+  drawer: null,                   // the drawer interior as measured: { w, l, h } in eighths
+  gap: 0,                         // safety gap in eighths, off each side of the width and length and once off the height
   root: newLeaf(),
   eq: [],                         // locked equal sizes: [{ a: '<space id>:w', b: '<space id>:l' }, ...]
 };
@@ -60,6 +62,19 @@ function maxId(n) { return n.kids ? Math.max(n.id, ...n.kids.map(maxId)) : n.id;
 const isDefaultLayout = () => !state.root.kids;
 
 /* ---------- layout ---------- */
+// The customer measures the drawer's inside (state.drawer, in eighths of an inch) and chooses a safety gap
+// (state.gap, eighths, taken off each side of the width and length and once off the height). Everything else in
+// the planner (layout, price, exports) works on the resulting insert size, state.dims.
+const GAPS = [0, 1, 2, 3, 4];                         // 0, 1/8, 1/4, 3/8, 1/2 inch
+const DEFAULT_GAP = 1;
+function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high
+  return { w: [40 + 2 * g, 376 + 2 * g], l: [40 + 2 * g, 376 + 2 * g], h: [4 + g, 120 + g] };
+}
+function syncInsert() {
+  const lim = drawerLimits(), clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
+  state.drawer = { w: clamp(state.drawer.w, lim.w), l: clamp(state.drawer.l, lim.l), h: clamp(state.drawer.h, lim.h) };
+  state.dims = { w: state.drawer.w - 2 * state.gap, l: state.drawer.l - 2 * state.gap, h: state.drawer.h - state.gap };
+}
 function drawerSize() {
   const { w, l, h } = state.dims;
   const H = eighthsToIn(h);
@@ -170,13 +185,15 @@ function loadSnapshot(text) {
   state.eq = s.eq || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ dims: state.dims, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ dims: state.dims, drawer: state.drawer, gap: state.gap, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (saved && saved.dims && saved.root) {
       state.dims = saved.dims;
+      state.gap = Number.isInteger(saved.gap) && GAPS.includes(saved.gap) ? saved.gap : 0;       // older saves were sizes of the insert itself: no gap
+      state.drawer = saved.drawer || { w: saved.dims.w + 2 * state.gap, l: saved.dims.l + 2 * state.gap, h: saved.dims.h + state.gap };
       state.root = saved.root;
       state.eq = Array.isArray(saved.eq) ? saved.eq : [];
       nextId = maxId(state.root) + 1;
@@ -807,30 +824,44 @@ function refresh() {
   updateNote();
 }
 
-function populateSelect(sel, fromIn, toIn) {
+function fillSelect(sel, from, to, value) {          // from, to, value in eighths of an inch
   sel.innerHTML = '';
-  for (let n = fromIn * 8; n <= toIn * 8; n++) {
+  for (let n = from; n <= to; n++) {
     const o = document.createElement('option');
     o.value = n;
     o.textContent = `${fmtEighths(n)}″`;
     sel.appendChild(o);
   }
+  sel.value = value;
 }
-populateSelect($('#dim-w'), 5, 47);
-populateSelect($('#dim-l'), 5, 47);
-populateSelect($('#dim-h'), 0.5, 15);
-
-// Dividers are stored as fractions of the drawer, so resizing the drawer scales the whole layout.
+function showSizes() {                                // the three drawer boxes, the gap, and the resulting insert size
+  const lim = drawerLimits();
+  fillSelect($('#dim-w'), lim.w[0], lim.w[1], state.drawer.w);
+  fillSelect($('#dim-l'), lim.l[0], lim.l[1], state.drawer.l);
+  fillSelect($('#dim-h'), lim.h[0], lim.h[1], state.drawer.h);
+  const gap = $('#dim-gap');
+  if (!gap.options.length) for (const g of GAPS) gap.add(new Option(g ? `${fmtEighths(g)}″` : 'None', g));
+  gap.value = state.gap;
+  const d = state.dims;
+  $('#insert-size').textContent = `${fmtEighths(d.w)}″ × ${fmtEighths(d.l)}″ × ${fmtEighths(d.h)}″`;
+}
+function sizesChanged() {
+  pendingNum = null;
+  syncInsert();
+  showSizes();
+  reconcileLinks(true);                              // resizing the insert re-solves the equal-size links
+  closePopover();
+  persist();
+  refresh();
+}
+// Dividers are stored as fractions of the insert, so resizing scales the whole layout.
 for (const id of ['#dim-w', '#dim-l', '#dim-h']) {
   $(id).addEventListener('change', () => {
-    state.dims = { w: +$('#dim-w').value, l: +$('#dim-l').value, h: +$('#dim-h').value };
-    pendingNum = null;
-    reconcileLinks(true);                      // resizing the drawer re-solves the equal-size links
-    closePopover();
-    persist();
-    refresh();
+    state.drawer = { w: +$('#dim-w').value, l: +$('#dim-l').value, h: +$('#dim-h').value };
+    sizesChanged();
   });
 }
+$('#dim-gap').addEventListener('change', () => { state.gap = +$('#dim-gap').value; sizesChanged(); });
 
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
@@ -941,7 +972,7 @@ function drawing() {
   // title block
   R(2, titleTop, pageW - 4, titleH, { stroke: '#111', sw: 0.4 });
   T(6, titleTop + 8, 'Drawer insert plan, seen from above', 4.2, { bold: true });
-  T(6, titleTop + 15, `Drawer interior ${fmtEighths(state.dims.w)} × ${fmtEighths(state.dims.l)} × ${fmtEighths(state.dims.h)} in (width, length, height)`, 2.9);
+  T(6, titleTop + 15, `Insert ${fmtEighths(state.dims.w)} × ${fmtEighths(state.dims.l)} × ${fmtEighths(state.dims.h)} in (width, length, height), for a drawer ${fmtEighths(state.drawer.w)} × ${fmtEighths(state.drawer.l)} × ${fmtEighths(state.drawer.h)} in inside`, 2.9);
   T(6, titleTop + 20.5, `${sorted.length} spaces, ${physical.length} dividers, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
   T(6, titleTop + 26, 'Each space shows width × length in inches.', 2.9, { fill: '#444' });
   T(6, titleTop + 38, `Scale 1:${ratio}. Print at 100%, not fit-to-page.`, 3.2, { bold: true });
@@ -988,7 +1019,7 @@ function designData() {
   const sorted = sortCells(cells);
   const r = v => Math.round(v * 10000) / 10000;
   return {
-    metadata: { version: '2.0', units: 'inches' },
+    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: eighthsToIn(state.drawer.w), length: eighthsToIn(state.drawer.l), height: eighthsToIn(state.drawer.h) }, safety_gap_in: eighthsToIn(state.gap) },   // drawer.* below is the insert itself
     drawer: { width_in: r(W), length_in: r(L), height_in: r(H), thickness_in: WALL, part_height_in: r(partH) },   // height_in is overall
     dividers: physicalDividers(divs).map((d, i) => ({
       id: `divider-${i}`, orientation: d.axis === 'v' ? 'vertical' : 'horizontal',
@@ -1027,8 +1058,10 @@ function sheetData() {
   return {
     sections: [
       { title: 'Sizes', right: [1], rows: [
-        ['Drawer interior (width × length × height)', `${inch(W)} × ${inch(L)} × ${inch(H)}`],
-        ['Divider height (drawer height less one sheet)', inch(partH)],
+        ['Drawer interior, as measured', `${inch(eighthsToIn(state.drawer.w))} × ${inch(eighthsToIn(state.drawer.l))} × ${inch(eighthsToIn(state.drawer.h))}`],
+        ['Safety gap (each side of the width and length, once off the height)', `${eighthsToIn(state.gap).toFixed(3)}"`],
+        ['Insert size (width × length × height)', `${inch(W)} × ${inch(L)} × ${inch(H)}`],
+        ['Divider height (insert height less one sheet)', inch(partH)],
         ['Sheet thickness', inch(WALL)],
         ['Open spaces', String(data.compartments.length)],
       ] },
@@ -1189,7 +1222,7 @@ function pdfFile(pages, title) {
 function makePlanPdf() {
   const dr = drawing();
   const pt = 72 / MM_PER_IN;                           // points per paper millimetre: the drawing prints at 100%
-  const subtitle = `Drawer ${fmtEighths(state.dims.w)} x ${fmtEighths(state.dims.l)} x ${fmtEighths(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
+  const subtitle = `Insert ${fmtEighths(state.dims.w)} x ${fmtEighths(state.dims.l)} x ${fmtEighths(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
   const drawingPage = pdfDrawScene(dr.scene, pt, (PDF_W - dr.w * pt) / 2, PDF_MARGIN);
   const pages = [drawingPage, ...pdfSheetPages(sheetData().sections, subtitle)];
   const today = new Date().toISOString().slice(0, 10);
@@ -1262,9 +1295,13 @@ on('#rev-copy-json', 'click', e => copyText(jsonText(), e.currentTarget));
 on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
 
 /* ---------- init ---------- */
-if (!restore()) state.dims = { w: 144, l: 176, h: 24 };      // opens ready to work: an 18 x 22 x 3 in drawer
+if (!restore()) {                                                  // opens ready to work: an 18 x 22 x 3 in drawer
+  state.gap = DEFAULT_GAP;
+  state.drawer = { w: 144, l: 176, h: 24 };
+  syncInsert();
+}
 resetHistory();
-$('#dim-w').value = state.dims.w; $('#dim-l').value = state.dims.l; $('#dim-h').value = state.dims.h;
+showSizes();
 refresh();
 
 /* ---------- embedded mode ----------
@@ -1279,9 +1316,8 @@ if (EMBED) {
     const eighths = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(+v * 8)));
     const w = eighths(m.dims.width, 40, 376), l = eighths(m.dims.length, 40, 376), h = eighths(m.dims.height, 4, 120);
     if (![w, l, h].every(Number.isFinite)) return;
-    state.dims = { w, l, h };
-    $('#dim-w').value = w; $('#dim-l').value = l; $('#dim-h').value = h;
-    reconcileLinks(true); persist(); refresh();
+    state.drawer = { w: w + 2 * state.gap, l: l + 2 * state.gap, h: h + state.gap };
+    sizesChanged();
   });
   on('#finish', 'click', e => {
     const btn = e.currentTarget, pb = priceBreakdown();
