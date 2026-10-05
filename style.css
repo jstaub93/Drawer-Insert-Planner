@@ -221,11 +221,8 @@ select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px
 }
 
 /* ---------- embedded in the store's order form (?embed=1) ---------- */
-#finish { display: none; }
 body.embed .masthead, body.embed .foot, body.embed #open-review { display: none; }
 body.embed { padding-bottom: 84px; }
-body.embed #finish { display: block; position: fixed; right: 20px; bottom: 18px; z-index: 50; width: auto; padding: 14px 30px; margin: 0; font-size: 16px; border-radius: 6px; box-shadow: 0 8px 22px rgba(16, 40, 58, .35); }
-body.embed #finish:hover { transform: translateY(-1px); }
 .estimate .btn { width: 100%; }
 
 /* upload progress shown while the order form stores the plan files */
@@ -248,11 +245,8 @@ body.editor-full .masthead, body.editor-full .foot { display: none; }
 body.editor-full .plan { position: fixed; inset: 0; z-index: 60; border: 0; border-radius: 0; }
 body.editor-full .stage { flex: 1; height: auto; min-height: 0; border-radius: 0; }
 body.editor-full .plan-price { display: inline; }
-/* the side panels give way; only the "Use this design" button of the embedded planner stays */
-body.editor-full .rail > *:not(.estimate) { display: none; }
-body.editor-full .estimate { border: 0; background: none; padding: 0; margin: 0; box-shadow: none; height: 0; overflow: visible; }
-body.editor-full .estimate > *:not(#finish) { display: none; }
-body.embed #finish { z-index: 70; }
+/* the side panels give way; the price and "Use this design" bar of the embedded planner stays */
+body.editor-full .rail { display: none; }
 @media (max-width: 900px) { body.editor-full .stage { height: auto; min-height: 0; } }
 
 /* the insert size, after the safety gap */
@@ -269,3 +263,12 @@ body.embed #finish { z-index: 70; }
 #confirm-overlay .ov-sub { margin: 10px 0 18px; font-size: 14px; color: var(--ink-2); line-height: 1.45; }
 #confirm-overlay .ask-buttons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 #confirm-overlay .ask-buttons .btn { width: auto; padding: 10px 16px; }
+
+/* the embedded planner's bar: your price next to "Use this design", always in view */
+.finish-bar { display: none; }
+body.embed .finish-bar { display: flex; align-items: center; gap: 14px; position: fixed; right: 20px; bottom: 18px; z-index: 70; padding: 8px 8px 8px 16px; background: #fff; border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 22px rgba(16, 40, 58, .3); }
+.finish-bar .fb-total { display: grid; line-height: 1.1; text-align: right; }
+.finish-bar .fb-total small { font: 600 11px var(--font-body); letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); }
+.finish-bar .fb-total b { font: 700 21px var(--font-mono); color: var(--ink); }
+body.embed #finish { width: auto; margin: 0; padding: 13px 24px; font-size: 16px; border-radius: 6px; }
+@media (max-width: 600px) { body.embed .finish-bar { left: 10px; right: 10px; bottom: 10px; justify-content: space-between; } body.embed #finish { padding: 12px 16px; } }

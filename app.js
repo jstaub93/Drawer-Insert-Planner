@@ -813,6 +813,7 @@ function refresh() {
   $('#price-material').textContent = fmtMoney(pb.dividerCost);
   $('#price-dividers-label').textContent = divided ? `Dividers (${pb.dividers})` : 'Dividers';
   $('#plan-price').textContent = fmtMoney(pb.total);
+  $('#fb-price').textContent = fmtMoney(pb.total);
   $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Divide the drawer to add dividers, or use it as an empty tray.';
   $('#open-review').disabled = false;                 // an empty tray is a valid design
   $('#stock-thickness').textContent = `${WALL.toFixed(2)}″`;
