@@ -14,7 +14,7 @@
 
 const MM_PER_IN = 25.4;           // only used to size the printed drawing in millimetres
 const WALL = 0.17;                // sheet thickness: outer wall and divider thickness (in)
-const MIN_CELL = 1;               // smallest compartment edge (in)
+const MIN_CELL = 1 / 16;          // smallest compartment edge (in): no real limit, just enough that two dividers never sit on top of each other
 const SNAP = 1 / 16;              // drag snapping (in)
 const EPS = 0.002;                // tolerance when matching positions (in)
 const STORAGE_KEY = 'drawer-organizer-designer:v1';
@@ -712,7 +712,7 @@ function plainDelete(info) {
 function deleteBlocker(info) {
   if (!findNode(state.root, info.nodeId)) return 'This divider is no longer there.';
   if (plainDelete(info) || planExtendedDelete(info)) return null;
-  return 'Dividers end on this one, and extending them would make two dividers run side by side or leave a space under 1 in. Line those dividers up, or delete them first.';
+  return 'Dividers end on this one, and extending them would make two dividers overlap. Line those dividers up, or delete them first.';
 }
 
 /* Deleting a divider that other dividers end on: those dividers would be left hanging, so each one is extended
