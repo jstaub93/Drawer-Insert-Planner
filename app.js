@@ -107,7 +107,7 @@ function transposeAt(n, axis) {
 function layoutTree(root, W, L) {
   const cells = [], divs = [], regions = new Map();    // regions: every node's rectangle, for the constraint solver
   (function walk(n, x, y, w, h) {
-    regions.set(n.id, { w, h });
+    regions.set(n.id, { w, h, x, y });
     if (!n.kids) { cells.push({ n, x, y, w, h }); return; }
     const nc = n.colF.length, nr = n.rowF.length;
     const aw = w - (nc - 1) * WALL, ah = h - (nr - 1) * WALL;
@@ -146,7 +146,7 @@ function physicalDividers(divs) {
     const segs = divs.filter(d => d.axis === axis).map(d => axis === 'v'
       ? { axis, pos: d.x, start: d.y, end: d.y + d.h }
       : { axis, pos: d.y, start: d.x, end: d.x + d.w });
-    segs.sort((a, b) => a.pos - b.pos || a.start - b.start);
+    segs.sort((a, b) => Math.round(a.pos / EPS) - Math.round(b.pos / EPS) || a.start - b.start);     // positions that differ by float noise are the same line
     let cur = null;
     for (const s of segs) {
       if (cur && Math.abs(s.pos - cur.pos) < EPS && s.start <= cur.end + WALL + EPS) cur.end = Math.max(cur.end, s.end);
@@ -698,15 +698,124 @@ function pairsAcross(n, axis, i) {
     : Array.from({ length: nc }, (_, c) => [i * nc + c, (i + 1) * nc + c]);
 }
 
-// Why a divider cannot be deleted, or null when it can. Only undivided spaces can be merged.
-function deleteBlocker(info) {
+// True when both spaces beside the divider are undivided, so deleting simply merges them.
+function plainDelete(info) {
   const n = findNode(state.root, info.nodeId);
-  if (!n) return 'This divider is no longer there.';
+  if (!n) return false;
   const pairs = info.piece !== null
     ? [[n.kids[info.i].kids && n.kids[info.i].kids[info.piece], n.kids[info.i + 1].kids && n.kids[info.i + 1].kids[info.piece]]]
     : pairsAcross(n, info.axis, info.i).map(([a, b]) => [n.kids[a], n.kids[b]]);
-  const open = pairs.every(([a, b]) => a && b && !a.kids && !b.kids);
-  return open ? null : 'Both spaces beside it must be undivided. Delete the dividers inside them first.';
+  return pairs.every(([a, b]) => a && b && !a.kids && !b.kids);
+}
+
+// Why a divider cannot be deleted, or null when it can. Dividers that ended on it are extended (see below).
+function deleteBlocker(info) {
+  if (!findNode(state.root, info.nodeId)) return 'This divider is no longer there.';
+  if (plainDelete(info) || planExtendedDelete(info)) return null;
+  return 'Dividers end on this one, and extending them would make two dividers run side by side or leave a space under 1 in. Line those dividers up, or delete them first.';
+}
+
+/* Deleting a divider that other dividers end on: those dividers would be left hanging, so each one is extended
+ * until it reaches a wall or another divider. The layout is described as divider lines (position and extent),
+ * the deleted line is taken out, the hanging ends are lengthened, and the grid tree is rebuilt from the lines.
+ * Spaces whose rectangle did not change keep their ids (and so their equal-size links). */
+function mergeLines(segs) {
+  const out = [];
+  for (const axis of ['v', 'h']) {
+    const list = segs.filter(x => x.axis === axis).sort((a, b) => Math.round(a.pos / EPS) - Math.round(b.pos / EPS) || a.s - b.s);
+    let cur = null;
+    for (const x of list) {
+      if (cur && Math.abs(x.pos - cur.pos) < EPS && x.s <= cur.e + WALL + EPS) cur.e = Math.max(cur.e, x.e);
+      else { if (cur) out.push(cur); cur = { ...x }; }
+    }
+    if (cur) out.push(cur);
+  }
+  return out;
+}
+
+// Rebuild the grid tree for rectangle R from divider lines that all lie inside it; null if they do not form a nested grid.
+function treeFromLines(R, segs) {
+  const lines = mergeLines(segs);
+  if (!lines.length) return { _r: R };
+  const spanOf = l => (l.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w]);
+  const full = lines.filter(l => { const [a, b] = spanOf(l); return Math.abs(l.s - a) < EPS && Math.abs(l.e - b) < EPS; });
+  const vs = full.filter(l => l.axis === 'v').map(l => l.pos).sort((a, b) => a - b);
+  const hs = full.filter(l => l.axis === 'h').map(l => l.pos).sort((a, b) => a - b);
+  if (!full.length) return null;
+  const cuts = (lo, hi, at) => { const out = []; let p = lo; for (const q of at) { out.push([p, q]); p = q + WALL; } out.push([p, hi]); return out; };
+  const cols = cuts(R.x, R.x + R.w, vs), rows = cuts(R.y, R.y + R.h, hs);
+  if ([...cols, ...rows].some(([a, b]) => b - a < EPS)) return null;
+  const aw = R.w - (cols.length - 1) * WALL, ah = R.h - (rows.length - 1) * WALL;
+  const rest = lines.filter(l => !full.includes(l));
+  const kids = [];
+  for (const [y0, y1] of rows) for (const [x0, x1] of cols) {
+    const C = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, inside = [];
+    for (const l of rest) {
+      const lo = l.axis === 'v' ? C.x : C.y, hi = lo + (l.axis === 'v' ? C.w : C.h);
+      if (l.pos < lo - EPS || l.pos + WALL > hi + EPS) continue;
+      const s = Math.max(l.s, l.axis === 'v' ? C.y : C.x), e = Math.min(l.e, l.axis === 'v' ? C.y + C.h : C.x + C.w);
+      if (e - s > EPS) inside.push({ axis: l.axis, pos: l.pos, s, e });
+    }
+    const kid = treeFromLines(C, inside);
+    if (!kid) return null;
+    kids.push(kid);
+  }
+  return { _r: R, colF: cols.map(([a, b]) => (b - a) / aw), rowF: rows.map(([a, b]) => (b - a) / ah), kids };
+}
+
+// The tree (rectangles attached as _r) that deleting the divider leaves, or null if it cannot be done.
+function planExtendedDelete(info) {
+  const n = findNode(state.root, info.nodeId);
+  if (!n) return null;
+  const { W, L } = drawerSize();
+  const R = { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL };
+  const { divs, cells } = currentLayout();
+  const target = divs.find(x => x.n === n && x.axis === info.axis && x.i === info.i);
+  if (!target) return null;
+  const toSeg = d => (d.axis === 'v' ? { axis: 'v', pos: d.x, s: d.y, e: d.y + d.h } : { axis: 'h', pos: d.y, s: d.x, e: d.x + d.w });
+  const line = toSeg(target), ax = line.axis, perp = ax === 'v' ? 'h' : 'v';
+  const span = target.pieces && info.piece !== null ? target.pieces[info.piece] : [line.s, line.e];
+  const segs = divs.filter(d => d !== target).map(toSeg);
+  if (span[0] - line.s > EPS) segs.push({ axis: ax, pos: line.pos, s: line.s, e: span[0] });
+  if (line.e - span[1] > EPS) segs.push({ axis: ax, pos: line.pos, s: span[1], e: line.e });
+  const lo = line.pos, hi = line.pos + WALL;                         // the gap the deleted line leaves
+  const walls = ax === 'v' ? [R.x, R.x + R.w] : [R.y, R.y + R.h];
+  const stops = segs.filter(x => x.axis === ax && Math.abs(x.pos - line.pos) > EPS);        // what an extended divider can run into
+  for (const x of segs) {
+    if (x.axis !== perp) continue;
+    if (Math.min(x.pos + WALL, span[1]) - Math.max(x.pos, span[0]) <= EPS) continue;       // does not touch the deleted piece
+    const blocks = b => b.s <= x.pos + EPS && b.e >= x.pos + WALL - EPS;
+    if (Math.abs(x.e - lo) < EPS) {                                  // arrives from below: carry on to the next wall or divider
+      x.e = Math.min(walls[1], ...stops.filter(b => b.pos > lo + EPS && blocks(b)).map(b => b.pos));
+    } else if (Math.abs(x.s - hi) < EPS) {                           // arrives from above: carry on the other way
+      x.s = Math.max(walls[0], ...stops.filter(b => b.pos < lo - EPS && blocks(b)).map(b => b.pos + WALL));
+    }
+  }
+  const tree = treeFromLines(R, segs);
+  if (!tree) return null;
+  const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
+  const tooSmall = t => (t.kids ? t.kids.some(tooSmall) : (t._r.w < MIN_CELL - EPS || t._r.h < MIN_CELL - EPS) && !cells.some(c => same(c, t._r)));
+  return tooSmall(tree) ? null : tree;           // extending must not leave a sliver of a space
+}
+
+function applyExtendedDelete(info) {
+  const tree = planExtendedDelete(info);
+  if (!tree) return false;
+  const { regions } = currentLayout(), oldNodes = [];
+  (function walk(nd) { oldNodes.push(nd); if (nd.kids) nd.kids.forEach(walk); })(state.root);
+  const near = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
+  const used = new Set();
+  const make = t => {
+    const m = oldNodes.find(o => !used.has(o.id) && !!o.kids === !!t.kids && near(regions.get(o.id), t._r));
+    if (m) used.add(m.id);
+    const node = { id: m ? m.id : nextId++ };
+    if (t.kids) { node.colF = t.colF; node.rowF = t.rowF; node.kids = t.kids.map(make); }
+    return node;
+  };
+  const root = make(tree);
+  dropLinksFor(oldNodes.filter(o => !used.has(o.id)).map(o => o.id));
+  state.root = root;
+  return true;
 }
 
 // Merge the spaces either side of divider i. Every other space keeps its size; the merged space also takes
@@ -733,6 +842,10 @@ function mergeAcross(n, axis, i) {
 function deleteDivider(info) {
   let n = findNode(state.root, info.nodeId);
   if (!n || deleteBlocker(info)) return;
+  if (!plainDelete(info)) {
+    if (applyExtendedDelete(info)) { closePopover(); commit(); }
+    return;
+  }
   if (info.piece !== null) { transposeAt(n, info.axis); n = n.kids[info.piece]; }
   if (!mergeAcross(n, info.axis, info.i)) return;
   closePopover();
@@ -758,7 +871,7 @@ function openDividerPopover(info, px, py) {
   $('#divpop-sizes').textContent = `${wide ? 'Left' : 'Back'} ${fmt2(s1)}″ · ${wide ? 'Right' : 'Front'} ${fmt2(s2)}″`;
   const blocker = deleteBlocker(info);
   $('#divpop-delete').disabled = !!blocker;
-  $('#divpop-delnote').textContent = blocker || 'Deleting merges the two spaces into one.';
+  $('#divpop-delnote').textContent = blocker || (plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider.');
   placePopover($('#divpop'), px, py);
 }
 $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDivider(dividerInfo); });
