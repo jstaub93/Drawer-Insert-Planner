@@ -157,6 +157,21 @@ function physicalDividers(divs) {
   return out.map(s => ({ axis: s.axis, pos: s.pos, start: s.start, length: s.end - s.start }));
 }
 
+// Shipping weight the way UPS bills it (pounds): the acrylic parts plus the honeycomb box, with a 10% margin, against
+// the box's dimensional weight (each box side is the insert plus 2 in, each rounded to a whole inch, divided by 139).
+// Mirrors pricing/weight_model.py.
+const SHIP = { acrylic: 1.18 * 16.387064 / 453.59237, honeycomb: 6 / (48 * 96), allowance: 2, safety: 1.10, divisor: 139 };
+function shippingFor(W, L, H, N, DA) {
+  const h = H - WALL;
+  const area = W * L + 2 * h * (L + W - 2 * WALL) + DA;                       // every part that gets cut
+  const acrylic = area * WALL * SHIP.acrylic;
+  const a = W + SHIP.allowance, b = L + SHIP.allowance, c = H + SHIP.allowance;
+  const box = 2 * (a * b + a * c + b * c) * SHIP.honeycomb;
+  const actual = (acrylic + box) * SHIP.safety;
+  const round = v => Math.floor(v + 0.5);                                      // UPS: nearest whole inch, halves up
+  const dimensional = round(a) * round(b) * round(c) / SHIP.divisor;
+  return { acrylic, box, actual, dimensional, boxDims: [round(a), round(b), round(c)], billable: Math.max(1, Math.ceil(Math.max(actual, dimensional) - 1e-9)) };
+}
 function priceFor(W, L, H, N, DA) {
   const h = H - WALL, S = h > 0 ? DA / h : 0;
   const area = W * L + 2 * h * (L + W - 2 * WALL) + DA;                       // every part that gets cut
@@ -166,14 +181,14 @@ function priceFor(W, L, H, N, DA) {
   return Math.max(PRICE.minimum, PRICE.k * cost);
 }
 function priceBreakdown() {
-  const zero = { drawer: 0, dividerCost: 0, dividers: 0, dividerArea: 0, total: 0 };
+  const zero = { drawer: 0, dividerCost: 0, dividers: 0, dividerArea: 0, total: 0, shipping: { billable: 0 } };
   if (!state.dims) return zero;
   const { W, L, H, partH } = drawerSize();
   const divs = physicalDividers(currentLayout().divs);
   const dividerArea = Math.round(divs.reduce((s, d) => s + d.length * partH, 0) * 100) / 100;   // the value the order form receives
   const total = priceFor(W, L, H, divs.length, dividerArea);
   const drawer = Math.min(total, priceFor(W, L, H, 0, 0));                    // the empty insert; the dividers account for the rest
-  return { drawer, dividerCost: total - drawer, dividers: divs.length, dividerArea, total };
+  return { drawer, dividerCost: total - drawer, dividers: divs.length, dividerArea, total, shipping: shippingFor(W, L, H, divs.length, dividerArea) };
 }
 const estimatePrice = () => priceBreakdown().total;
 
@@ -1032,7 +1047,8 @@ function designData() {
     price_estimate: {
       drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
     },
-    order_fields: { divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea },
+    order_fields: { divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea, shipping_weight_lb: priceBreakdown().shipping.billable },
+    shipping: (() => { const s = priceBreakdown().shipping; return { box_in: s.boxDims, actual_weight_lb: r(s.actual), dimensional_weight_lb: r(s.dimensional), billable_weight_lb: s.billable }; })(),
   };
 }
 
@@ -1070,6 +1086,12 @@ function sheetData() {
         ['Insert (bottom and outer walls)', fmtMoney(pb.drawer)],
         [`Dividers (${pb.dividers}, ${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.dividerCost)],
         ['Estimated total', fmtMoney(pb.total)],
+      ] },
+      { title: 'Shipping', right: [1], rows: [
+        ['Box (each side is the insert plus 2 in)', `${pb.shipping.boxDims.join(' × ')} in`],
+        ['Actual weight (acrylic and box, plus 10%)', `${pb.shipping.actual.toFixed(1)} lb`],
+        ['Dimensional weight (UPS, divided by 139)', `${pb.shipping.dimensional.toFixed(1)} lb`],
+        ['Billable weight (the greater, rounded up)', `${pb.shipping.billable} lb`],
       ] },
       { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) },
       { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.map(c => [c.label, inch(c.width_in), inch(c.length_in)]) },
@@ -1331,7 +1353,7 @@ if (EMBED) {
     window.parent.postMessage({
       type: 'drawer-insert-plan', version: 1,
       dims: { width: W, length: L, height: H },
-      dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100,
+      dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100, weight: pb.shipping.billable,
       json: jsonText(), pdf: buf,
     }, '*', [buf]);
     showUpload('progress', 0);
