@@ -1199,23 +1199,50 @@ function drawing() {
   // The drawing is a list of simple shapes in paper millimetres, drawn as SVG and as PDF.
   const scene = [];
   const R = (x, y, w, h, o = {}) => scene.push({ k: 'rect', x, y, w, h, fill: o.fill || null, stroke: o.stroke || null, sw: o.sw || 0, rx: o.rx || 0 });
+  const C = (x, y, r, o = {}) => scene.push({ k: 'circle', x, y, r, fill: o.fill || null, stroke: o.stroke || null, sw: o.sw || 0 });
   const Ln = (x1, y1, x2, y2, sw = 0.25) => scene.push({ k: 'line', x1, y1, x2, y2, stroke: '#111', sw });
   const T = (x, y, s, size, o = {}) => scene.push({ k: 'text', x, y, s, size, anchor: o.anchor || 'start', bold: !!o.bold, fill: o.fill || '#000', rot: o.rot || 0, ls: o.ls || 0 });
 
   R(0, 0, pageW, pageH, { fill: '#fff' });
   R(ox, oy, planW, planL, { fill: '#c9c9c9', stroke: '#111', sw: 0.5 });
   const sorted = sortCells(cells);
+  const callouts = [], labels = [];          // callouts: spaces too small for their letter, labelled in the margin instead
   sorted.forEach((c, i) => {
     const x = ox + c.x * k, y = oy + c.y * k, w = c.w * k, h = c.h * k;
     R(x, y, w, h, { fill: '#fff', stroke: '#111', sw: 0.25 });
     const cx = x + w / 2, cy = y + h / 2;
     if (w >= 21 && h >= 12) {
-      T(cx, cy - 0.6, labelFor(i), 4.6, { bold: true, anchor: 'middle' });
-      T(cx, cy + 4.2, `${fmt2(c.w)} × ${fmt2(c.h)}`, 2.8, { anchor: 'middle', fill: '#333' });
+      labels.push({ x: cx, y: cy - 0.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 4.2, s: `${fmt2(c.w)} × ${fmt2(c.h)}`, size: 2.8, fill: '#333' });
     } else if (w >= 6 && h >= 6) {
-      T(cx, cy + 1.5, labelFor(i), Math.min(4.6, w * 0.6, h * 0.6), { bold: true, anchor: 'middle' });
+      labels.push({ x: cx, y: cy + 1.5, s: labelFor(i), size: Math.min(4.6, w * 0.6, h * 0.6), bold: true });
+    } else {
+      callouts.push({ letter: labelFor(i), cx, cy });
     }
   });
+  // Callouts: the letter sits in a circle beside the drawing, on a thin leader line to a dot in its space.
+  // They are spread out down the right-hand margin so they never overlap.
+  if (callouts.length) {
+    const lx = ox + planW + 8.5, gap = 7.2, r = 2.8;
+    callouts.sort((a, b) => a.cy - b.cy);
+    let prev = -Infinity;
+    for (const c of callouts) { c.ly = Math.max(c.cy, prev + gap); prev = c.ly; }
+    const floor = oy + planL;
+    if (prev > floor) { callouts[callouts.length - 1].ly = Math.max(floor, callouts[callouts.length - 1].ly - (prev - floor)); for (let j = callouts.length - 2; j >= 0; j--) callouts[j].ly = Math.min(callouts[j].ly, callouts[j + 1].ly - gap); }
+    for (const c of callouts) {
+      Ln(c.cx, c.cy, lx - r, c.ly, 0.2);
+      C(c.cx, c.cy, 0.7, { fill: '#111' });
+    }
+    for (const c of callouts) {
+      C(lx, c.ly, r, { fill: '#fff', stroke: '#111', sw: 0.3 });
+      T(lx, c.ly + 1.5, c.letter, 4.2, { bold: true, anchor: 'middle' });
+    }
+  }
+  // Letters and sizes inside the spaces go on top, on a white patch, so a leader line passing through never strikes them out.
+  for (const l of labels) {
+    const w = pdfWidth(l.s, l.size, l.bold) + 1.2;
+    R(l.x - w / 2, l.y - l.size * 0.78, w, l.size * 1.02, { fill: '#fff' });
+    T(l.x, l.y, l.s, l.size, { bold: !!l.bold, anchor: 'middle', fill: l.fill });
+  }
 
   // overall dimension lines (extension lines, dimension line, end ticks)
   const dimH = (x1, x2, y, label) => {
@@ -1241,6 +1268,7 @@ function drawing() {
   T(6, titleTop + 15, `Insert ${fmtEighths(state.dims.w)} × ${fmtEighths(state.dims.l)} × ${fmtEighths(state.dims.h)} in (width, length, height), for a drawer ${fmtEighths(state.drawer.w)} × ${fmtEighths(state.drawer.l)} × ${fmtEighths(state.drawer.h)} in inside`, 2.9);
   T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
   T(6, titleTop + 26, 'Each space shows width × length in inches.', 2.9, { fill: '#444' });
+  if (callouts.length) T(6, titleTop + 31.5, 'Small spaces are lettered in the margin; sizes are on page 2.', 2.9, { fill: '#444' });
   T(6, titleTop + 38, `Scale 1:${ratio}. Print at 100%, not fit-to-page.`, 3.2, { bold: true });
 
   // scale bar
@@ -1259,6 +1287,7 @@ function sceneToSVG(scene, pageW, pageH) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const body = scene.map(o => {
     if (o.k === 'rect') return `<rect x="${n(o.x)}" y="${n(o.y)}" width="${n(o.w)}" height="${n(o.h)}"${o.rx ? ` rx="${o.rx}"` : ''} fill="${o.fill || 'none'}"${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw}"` : ''}/>`;
+    if (o.k === 'circle') return `<circle cx="${n(o.x)}" cy="${n(o.y)}" r="${n(o.r)}" fill="${o.fill || 'none'}"${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw}"` : ''}/>`;
     if (o.k === 'line') return `<line x1="${n(o.x1)}" y1="${n(o.y1)}" x2="${n(o.x2)}" y2="${n(o.y2)}" stroke="${o.stroke}" stroke-width="${o.sw}"/>`;
     const attrs = `x="${n(o.x)}" y="${n(o.y)}" font-size="${o.size}"${o.bold ? ' font-weight="700"' : ''}${o.anchor !== 'start' ? ` text-anchor="${o.anchor}"` : ''}${o.fill !== '#000' ? ` fill="${o.fill}"` : ''}${o.ls ? ` letter-spacing="${o.ls}"` : ''}${o.rot ? ` transform="rotate(${o.rot} ${n(o.x)} ${n(o.y)})"` : ''}`;
     return `<text ${attrs}>${esc(o.s)}</text>`;
@@ -1410,6 +1439,12 @@ function pdfDrawScene(scene, pt, left, top) {
       if (o.fill) ops.push(`${pdfRGB(o.fill)} rg`);
       if (o.stroke) ops.push(`${pdfRGB(o.stroke)} RG ${pdfNum(o.sw * pt)} w`);
       ops.push(`${pdfNum(X(o.x))} ${pdfNum(Y(o.y + o.h))} ${pdfNum(o.w * pt)} ${pdfNum(o.h * pt)} re ${paint}`);
+    } else if (o.k === 'circle') {
+      const paint = o.fill && o.stroke ? 'B' : o.fill ? 'f' : o.stroke ? 'S' : 'n';
+      const cx = X(o.x), cy = Y(o.y), r = o.r * pt, q = 0.5523 * r;
+      if (o.fill) ops.push(`${pdfRGB(o.fill)} rg`);
+      if (o.stroke) ops.push(`${pdfRGB(o.stroke)} RG ${pdfNum(o.sw * pt)} w`);
+      ops.push(`${pdfNum(cx + r)} ${pdfNum(cy)} m ${pdfNum(cx + r)} ${pdfNum(cy + q)} ${pdfNum(cx + q)} ${pdfNum(cy + r)} ${pdfNum(cx)} ${pdfNum(cy + r)} c ${pdfNum(cx - q)} ${pdfNum(cy + r)} ${pdfNum(cx - r)} ${pdfNum(cy + q)} ${pdfNum(cx - r)} ${pdfNum(cy)} c ${pdfNum(cx - r)} ${pdfNum(cy - q)} ${pdfNum(cx - q)} ${pdfNum(cy - r)} ${pdfNum(cx)} ${pdfNum(cy - r)} c ${pdfNum(cx + q)} ${pdfNum(cy - r)} ${pdfNum(cx + r)} ${pdfNum(cy - q)} ${pdfNum(cx + r)} ${pdfNum(cy)} c h ${paint}`);
     } else if (o.k === 'line') {
       ops.push(`${pdfRGB(o.stroke)} RG ${pdfNum(o.sw * pt)} w ${pdfNum(X(o.x1))} ${pdfNum(Y(o.y1))} m ${pdfNum(X(o.x2))} ${pdfNum(Y(o.y2))} l S`);
     } else {
