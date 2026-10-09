@@ -712,7 +712,7 @@ function plainDelete(info) {
 function deleteBlocker(info) {
   if (!findNode(state.root, info.nodeId)) return 'This divider is no longer there.';
   if (plainDelete(info) || planExtendedDelete(info)) return null;
-  return 'Dividers end on this one, and extending them would make two dividers overlap. Line those dividers up, or delete them first.';
+  return 'Dividers end on this one, and they cannot be extended into a clean layout. Delete or move those dividers first.';
 }
 
 /* Deleting a divider that other dividers end on: those dividers would be left hanging, so each one is extended
@@ -725,12 +725,41 @@ function mergeLines(segs) {
     const list = segs.filter(x => x.axis === axis).sort((a, b) => Math.round(a.pos / EPS) - Math.round(b.pos / EPS) || a.s - b.s);
     let cur = null;
     for (const x of list) {
-      if (cur && Math.abs(x.pos - cur.pos) < EPS && x.s <= cur.e + WALL + EPS) cur.e = Math.max(cur.e, x.e);
+      if (cur && Math.abs(x.pos - cur.pos) < EPS && x.s <= cur.e + WALL + EPS) { cur.e = Math.max(cur.e, x.e); cur.ext = cur.ext || x.ext; }
       else { if (cur) out.push(cur); cur = { ...x }; }
     }
     if (cur) out.push(cur);
   }
   return out;
+}
+
+// Two parallel dividers that run side by side with less than NARROW between them are one divider: the one that was
+// extended moves onto the other (two extended ones join on the longer). Dividers that ended on the moved one follow it.
+const NARROW = 0.2;
+function joinNarrow(lines) {
+  for (let pass = 0; pass < 100; pass++) {
+    let pair = null;
+    for (const a of lines) {
+      for (const b of lines) {
+        if (a === b || a.axis !== b.axis || !(a.ext || b.ext)) continue;
+        const d = Math.abs(a.pos - b.pos);
+        if (d > EPS && d < WALL + NARROW - EPS && Math.min(a.e, b.e) - Math.max(a.s, b.s) > EPS) { pair = [a, b]; break; }
+      }
+      if (pair) break;
+    }
+    if (!pair) return lines;
+    const [a, b] = pair;
+    const keep = a.ext !== b.ext ? (a.ext ? b : a) : (a.e - a.s >= b.e - b.s ? a : b);
+    const move = keep === a ? b : a, old = move.pos;
+    move.pos = keep.pos;
+    for (const x of lines) {
+      if (x.axis === move.axis || x.pos + WALL <= move.s + EPS || x.pos >= move.e - EPS) continue;
+      if (Math.abs(x.e - old) < EPS) x.e = keep.pos;
+      else if (Math.abs(x.s - (old + WALL)) < EPS) x.s = keep.pos + WALL;
+    }
+    lines = mergeLines(lines.filter(x => x.e - x.s > EPS));
+  }
+  return lines;
 }
 
 // Rebuild the grid tree for rectangle R from divider lines that all lie inside it; null if they do not form a nested grid.
@@ -786,12 +815,12 @@ function planExtendedDelete(info) {
     if (Math.min(x.pos + WALL, span[1]) - Math.max(x.pos, span[0]) <= EPS) continue;       // does not touch the deleted piece
     const blocks = b => b.s <= x.pos + EPS && b.e >= x.pos + WALL - EPS;
     if (Math.abs(x.e - lo) < EPS) {                                  // arrives from below: carry on to the next wall or divider
-      x.e = Math.min(walls[1], ...stops.filter(b => b.pos > lo + EPS && blocks(b)).map(b => b.pos));
+      x.e = Math.min(walls[1], ...stops.filter(b => b.pos > lo + EPS && blocks(b)).map(b => b.pos)); x.ext = true;
     } else if (Math.abs(x.s - hi) < EPS) {                           // arrives from above: carry on the other way
-      x.s = Math.max(walls[0], ...stops.filter(b => b.pos < lo - EPS && blocks(b)).map(b => b.pos + WALL));
+      x.s = Math.max(walls[0], ...stops.filter(b => b.pos < lo - EPS && blocks(b)).map(b => b.pos + WALL)); x.ext = true;
     }
   }
-  const tree = treeFromLines(R, segs);
+  const tree = treeFromLines(R, joinNarrow(mergeLines(segs)));
   if (!tree) return null;
   const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
   const tooSmall = t => (t.kids ? t.kids.some(tooSmall) : (t._r.w < MIN_CELL - EPS || t._r.h < MIN_CELL - EPS) && !cells.some(c => same(c, t._r)));
@@ -871,7 +900,7 @@ function openDividerPopover(info, px, py) {
   $('#divpop-sizes').textContent = `${wide ? 'Left' : 'Back'} ${fmt2(s1)}″ · ${wide ? 'Right' : 'Front'} ${fmt2(s2)}″`;
   const blocker = deleteBlocker(info);
   $('#divpop-delete').disabled = !!blocker;
-  $('#divpop-delnote').textContent = blocker || (plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider.');
+  $('#divpop-delnote').textContent = blocker || (plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider (two that end up closer than 0.2″ become one).');
   placePopover($('#divpop'), px, py);
 }
 $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDivider(dividerInfo); });
