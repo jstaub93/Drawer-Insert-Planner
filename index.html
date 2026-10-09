@@ -75,6 +75,7 @@
         <li>To make two sizes equal, select a number inside one space, then a number inside another. They are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces.</li>
         <li>Divide a space again to build grids and nested layouts.</li>
+        <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
         <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
       </ul>
     </details>
@@ -104,6 +105,11 @@
     </div>
     <div class="stage" id="stage">
       <div class="note-bar" id="note-bar" role="status" hidden></div>
+      <div class="zoom-ctl" id="zoom-ctl" role="group" aria-label="Zoom the plan">
+        <button type="button" id="zoom-out" title="Zoom out (−)" aria-label="Zoom out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        <button type="button" id="zoom-fit" class="zoom-pct" title="Show the whole drawer (0)"><span id="zoom-pct">100%</span></button>
+        <button type="button" id="zoom-in" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+      </div>
       <svg id="canvas" role="img" aria-label="Plan of the drawer from above. Select a space to divide it."></svg>
       <div class="popover" id="popover" hidden role="dialog" aria-label="Divide this space">
         <div class="pop-title">Divide this space</div>

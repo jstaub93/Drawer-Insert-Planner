@@ -382,6 +382,50 @@ function solveLinks(eq, { pin = null, freeVars = null } = {}) {
   return { prob, ...projectConstraints(prob, extra, heavy) };
 }
 
+/* ---------- zoom and pan ---------- */
+// view.z multiplies the scale that fits the drawer in the window; (view.u, view.v) is the point of the drawer (inches)
+// shown at the middle of the editor. At z = 1 the whole drawer is shown, centred.
+const ZMAX = 20;
+const view = { z: 1, u: null, v: null };
+const pointers = new Map();        // fingers and mouse buttons currently down on the plan
+let pinch = null, pan = null;
+
+// Set the zoom so that the drawer point (ix, iy) sits under the screen point (px, py), both relative to the plan.
+function applyView(z, ix, iy, px, py) {
+  const vw = canvas._view;
+  if (!vw) return;
+  z = clamp(z, 1, ZMAX);
+  if (z === 1) { view.z = 1; view.u = view.v = null; }
+  else {
+    const s = vw.fit * z;
+    view.z = z; view.u = (vw.rcx - (px - ix * s)) / s; view.v = (vw.rcy - (py - iy * s)) / s;
+  }
+  closePopover();
+  renderDrawer(canvas, { interactive: true });
+}
+function setZoom(z, cx, cy) {                   // cx, cy: the screen point to keep still (client pixels); default the middle
+  const vw = canvas._view, r = canvas.getBoundingClientRect();
+  if (!vw) return;
+  const px = (cx === undefined ? vw.rcx + r.left : cx) - r.left, py = (cy === undefined ? vw.rcy + r.top : cy) - r.top;
+  applyView(z, (px - vw.ox) / vw.s, (py - vw.oy) / vw.s, px, py);
+}
+function panBy(dx, dy) {
+  const vw = canvas._view;
+  if (!vw || view.z <= 1) return;
+  view.u = (vw.rcx - (vw.ox + dx)) / vw.s; view.v = (vw.rcy - (vw.oy + dy)) / vw.s;
+  closePopover();
+  renderDrawer(canvas, { interactive: true });
+}
+function updateZoomUI() {
+  const pct = $('#zoom-pct');
+  if (!pct) return;
+  pct.textContent = Math.round(view.z * 100) + '%';
+  $('#zoom-out').disabled = view.z <= 1;
+  $('#zoom-in').disabled = view.z >= ZMAX;
+  $('#zoom-fit').disabled = view.z <= 1;
+  $('#stage').classList.toggle('zoomed', view.z > 1);
+}
+
 /* ---------- rendering ---------- */
 const PAD = { top: 58, right: 30, bottom: 54, left: 66 };
 
@@ -394,11 +438,15 @@ function renderDrawer(svg, { interactive }) {
 
   const { W, L } = drawerSize();
   const pad = interactive ? PAD : { top: 44, right: 16, bottom: 44, left: 44 };
-  const s = Math.max(0.01, Math.min((bw - pad.left - pad.right) / W, (bh - pad.top - pad.bottom) / L));
+  const fit = Math.max(0.01, Math.min((bw - pad.left - pad.right) / W, (bh - pad.top - pad.bottom) / L));
+  const z = interactive ? view.z : 1;
+  const s = fit * z;
   const dw = W * s, dl = L * s;
-  const ox = pad.left + (bw - pad.left - pad.right - dw) / 2;
-  const oy = pad.top + (bh - pad.top - pad.bottom - dl) / 2;
-  svg._view = { ox, oy, s };
+  const rcx = pad.left + (bw - pad.left - pad.right) / 2, rcy = pad.top + (bh - pad.top - pad.bottom) / 2;     // the middle of the area the drawer is fitted to
+  const u = z > 1 ? clamp(view.u === null ? W / 2 : view.u, 0, W) : W / 2, v = z > 1 ? clamp(view.v === null ? L / 2 : view.v, 0, L) : L / 2;   // the point of the drawer shown there
+  const ox = rcx - u * s, oy = rcy - v * s;
+  svg._view = { ox, oy, s, fit, rcx, rcy, W, L };
+  if (interactive) updateZoomUI();
 
   const { cells, divs } = layoutTree(state.root, W, L);
   const out = [];
@@ -434,9 +482,12 @@ function renderDrawer(svg, { interactive }) {
       + `<text class="cell-label" x="${x0}" y="${y}" font-size="${size}" dominant-baseline="central">${text}</text>`;
   };
   for (const c of cells) {
-    const wpx = c.w * s, hpx = c.h * s;
+    // zoomed in, a space is mostly off screen: put its label in the part that is showing
+    const px0 = Math.max(ox + c.x * s, 0), px1 = Math.min(ox + (c.x + c.w) * s, bw), py0 = Math.max(oy + c.y * s, 0), py1 = Math.min(oy + (c.y + c.h) * s, bh);
+    if (px1 - px0 < 4 || py1 - py0 < 4) continue;
+    const wpx = px1 - px0, hpx = py1 - py0;
     const a = fmt2(c.w) + '″', b = fmt2(c.h) + '″';
-    const cx = ox + (c.x + c.w / 2) * s, cy = oy + (c.y + c.h / 2) * s;
+    const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
     const kw = numKey(c.n.id, 'w'), kl = numKey(c.n.id, 'l');
     let fs = Math.min(16, (wpx - 12) / 8.6);
     if (fs >= 10.5 && hpx > 24) {
@@ -502,6 +553,17 @@ function findNode(n, id) {
 let numPress = null;      // a pending click on a number
 
 canvas.addEventListener('pointerdown', e => {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {                      // a second finger: pinch to zoom, and drag to move, instead of anything else
+    if (drag) { loadSnapshot(drag.before); drag = null; refresh(); }
+    numPress = null; press = null; pan = null;
+    const [a, b] = [...pointers.values()], vw = canvas._view, r = canvas.getBoundingClientRect();
+    const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
+    pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: view.z, ix: (cx - vw.ox) / vw.s, iy: (cy - vw.oy) / vw.s };
+    closePopover();
+    return;
+  }
+  if (pointers.size > 2) return;
   const num = e.target.closest('[data-num]');
   if (num) {
     closePopover();
@@ -545,8 +607,40 @@ canvas.addEventListener('pointerdown', e => {
   }
   const cell = e.target.closest('[data-cell]');
   press = cell ? { id: +cell.dataset.cell, x: e.clientX, y: e.clientY } : null;
-  if (!cell) { closePopover(); if (pendingNum) { pendingNum = null; refresh(); } }
+  if (!cell) {
+    closePopover(); if (pendingNum) { pendingNum = null; refresh(); }
+    if (view.z > 1) { pan = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); }     // empty ground: drag to move the view
+  }
 });
+
+// Zoomed in, dragging a space (rather than clicking it) moves the view too. Two fingers pinch.
+canvas.addEventListener('pointermove', e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch) {
+    if (pointers.size < 2) return;
+    const [a, b] = [...pointers.values()], r = canvas.getBoundingClientRect();
+    applyView(pinch.z0 * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0, pinch.ix, pinch.iy, (a.x + b.x) / 2 - r.left, (a.y + b.y) / 2 - r.top);
+    return;
+  }
+  if (!pan && press && view.z > 1 && Math.hypot(e.clientX - press.x, e.clientY - press.y) >= 6) {
+    pan = { x: press.x, y: press.y }; press = null; canvas.setPointerCapture(e.pointerId);
+  }
+  if (pan) { panBy(e.clientX - pan.x, e.clientY - pan.y); pan = { x: e.clientX, y: e.clientY }; }
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pinch && pointers.size < 2) pinch = null;
+  pan = null;
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('wheel', e => {
+  if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(view.z * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.12 : 0.004)), e.clientX, e.clientY); }
+  else if (view.z > 1) { e.preventDefault(); panBy(-(e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX), e.shiftKey && !e.deltaX ? 0 : -e.deltaY); }
+}, { passive: false });
+$('#zoom-in').addEventListener('click', () => setZoom(view.z * 1.5));
+$('#zoom-out').addEventListener('click', () => setZoom(view.z / 1.5));
+$('#zoom-fit').addEventListener('click', () => setZoom(1));
 
 // Move the dragged divider to `target` (the size of the space before it) while every equal-size link holds.
 // If the links make that impossible the divider stops at the nearest position that works.
@@ -1042,6 +1136,11 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.target && /^(SELECT|INPUT|TEXTAREA)$/.test(e.target.tagName)) return;      // leave form fields to the browser
+  if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); setZoom(view.z * 1.5); return; }
+    if (e.key === '-' || e.key === '_') { e.preventDefault(); setZoom(view.z / 1.5); return; }
+    if (e.key === '0') { e.preventDefault(); setZoom(1); return; }
+  }
   if (e.key === 'Delete' && dividerInfo && !$('#divpop-delete').disabled) { e.preventDefault(); deleteDivider(dividerInfo); return; }
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }

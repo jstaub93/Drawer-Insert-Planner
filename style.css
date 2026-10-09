@@ -128,6 +128,16 @@ select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px
 }
 #canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
 
+/* zoom controls, bottom right of the plan */
+.zoom-ctl { position: absolute; z-index: 3; right: 10px; bottom: 10px; display: flex; align-items: stretch; background: #fff; border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 2px 8px rgba(16, 40, 58, 0.15); overflow: hidden; }
+.zoom-ctl button { border: 0; background: transparent; color: var(--ink); min-width: 38px; min-height: 36px; padding: 0 8px; cursor: pointer; font: 600 13px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; }
+.zoom-ctl button + button { border-left: 1px solid var(--rule); }
+.zoom-ctl button:hover:not(:disabled) { background: var(--accent-soft); }
+.zoom-ctl button:disabled { color: #9aabb7; cursor: default; }
+.zoom-ctl svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.zoom-ctl .zoom-pct { min-width: 56px; }
+.stage.zoomed #canvas { cursor: grab; }
+
 /* drawing parts */
 .wall { fill: var(--ply); stroke: var(--ply-edge); stroke-width: 1; }
 .outline { fill: none; stroke: var(--ink); stroke-width: 2; pointer-events: none; }
