@@ -641,6 +641,15 @@ canvas.addEventListener('wheel', e => {
 $('#zoom-in').addEventListener('click', () => setZoom(view.z * 1.5));
 $('#zoom-out').addEventListener('click', () => setZoom(view.z / 1.5));
 $('#zoom-fit').addEventListener('click', () => setZoom(1));
+{
+  const mq = window.matchMedia('(max-width: 600px)'), ctl = $('#zoom-ctl');
+  const place = () => {
+    ctl.classList.toggle('in-bar', mq.matches);
+    if (mq.matches) $('.bar-end').insertBefore(ctl, $('#expand')); else $('#stage').insertBefore(ctl, canvas);
+  };
+  place();
+  mq.addEventListener('change', place);
+}
 
 // Move the dragged divider to `target` (the size of the space before it) while every equal-size link holds.
 // If the links make that impossible the divider stops at the nearest position that works.

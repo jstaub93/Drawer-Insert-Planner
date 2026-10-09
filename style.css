@@ -137,6 +137,10 @@ select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px
 .zoom-ctl svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .zoom-ctl .zoom-pct { min-width: 56px; }
 .stage.zoomed #canvas { cursor: grab; }
+/* the embedded planner has a fixed "Use this design" bar at the bottom right: keep the zoom controls clear of it */
+body.embed .zoom-ctl { right: auto; left: 10px; }
+/* on a phone the controls move up into the toolbar, clear of the plan and of that bar */
+.zoom-ctl.in-bar { position: static; box-shadow: none; }
 
 /* drawing parts */
 .wall { fill: var(--ply); stroke: var(--ply-edge); stroke-width: 1; }
