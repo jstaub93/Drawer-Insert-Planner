@@ -1596,9 +1596,9 @@ function copyText(text, btn) {
   else fallback();
 }
 
-on('#rev-json', 'click', e => saveFile('insert-plan.json', jsonText(), e.currentTarget));
+on('#rev-json', 'click', e => saveFile('data.json', jsonText(), e.currentTarget));
 on('#rev-csv', 'click', e => saveFile('insert-parts.csv', csvText(), e.currentTarget));
-on('#rev-pdf', 'click', e => saveFile('insert-plan.pdf', makePlanPdf(), e.currentTarget));
+on('#rev-pdf', 'click', e => saveFile('Layout_Drawing.pdf', makePlanPdf(), e.currentTarget));
 on('#rev-svg', 'click', e => saveFile('insert-drawing.svg', drawing().svg, e.currentTarget));
 on('#rev-png', 'click', async e => { const b = e.currentTarget; try { await saveFile('insert-drawing.png', await drawingPNG(), b); } catch (err) { /* handled in saveFile */ } });
 on('#rev-print', 'click', () => window.print());
