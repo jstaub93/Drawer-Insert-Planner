@@ -1345,7 +1345,8 @@ function cutList() {
 }
 
 // The plan sheet's tables, shared by the on-screen sheet and the PDF.
-function sheetData() {
+// prices: false leaves the cost out (the PDF that goes to the shop carries no pricing)
+function sheetData({ prices = true } = {}) {
   const data = designData();
   const { W, L, H, partH } = drawerSize();
   const cuts = cutList();
@@ -1361,11 +1362,11 @@ function sheetData() {
         ['Sheet thickness', inch(WALL)],
         ['Open spaces', String(data.compartments.length)],
       ] },
-      { title: 'Cost estimate', right: [1], total: true, rows: [
+      ...(!prices ? [] : [{ title: 'Cost estimate', right: [1], total: true, rows: [
         ['Insert (bottom and outer walls)', fmtMoney(pb.drawer)],
         [`Dividers (${pb.dividers}, ${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.dividerCost)],
         ['Estimated total', fmtMoney(pb.total)],
-      ] },
+      ] }]),
       { title: 'Shipping', right: [1], rows: [
         ['Box (each side is the insert plus 2 in)', `${pb.shipping.boxDims.join(' × ')} in`],
         ['Actual weight (acrylic and box, plus 10%)', `${pb.shipping.actual.toFixed(1)} lb`],
@@ -1535,7 +1536,7 @@ function makePlanPdf() {
   const pt = 72 / MM_PER_IN;                           // points per paper millimetre: the drawing prints at 100%
   const subtitle = `Insert ${fmtEighths(state.dims.w)} x ${fmtEighths(state.dims.l)} x ${fmtEighths(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
   const drawingPage = pdfDrawScene(dr.scene, pt, (PDF_W - dr.w * pt) / 2, PDF_MARGIN);
-  const pages = [drawingPage, ...pdfSheetPages(sheetData().sections, subtitle)];
+  const pages = [drawingPage, ...pdfSheetPages(sheetData({ prices: false }).sections, subtitle)];
   const today = new Date().toISOString().slice(0, 10);
   const footer = (i, n) => {
     const label = `Drawer Insert Planner   ${today}`, right = `Page ${i} of ${n}`;
