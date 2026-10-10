@@ -1345,8 +1345,8 @@ function cutList() {
 }
 
 // The plan sheet's tables, shared by the on-screen sheet and the PDF.
-// prices: false leaves the cost out (the PDF that goes to the shop carries no pricing)
-function sheetData({ prices = true } = {}) {
+// pdf: true is the PDF that goes to the shop: sizes and spaces only, with no pricing, shipping box or parts list
+function sheetData({ pdf = false } = {}) {
   const data = designData();
   const { W, L, H, partH } = drawerSize();
   const cuts = cutList();
@@ -1362,18 +1362,18 @@ function sheetData({ prices = true } = {}) {
         ['Sheet thickness', inch(WALL)],
         ['Open spaces', String(data.compartments.length)],
       ] },
-      ...(!prices ? [] : [{ title: 'Cost estimate', right: [1], total: true, rows: [
+      ...(pdf ? [] : [{ title: 'Cost estimate', right: [1], total: true, rows: [
         ['Insert (bottom and outer walls)', fmtMoney(pb.drawer)],
         [`Dividers (${pb.dividers}, ${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.dividerCost)],
         ['Estimated total', fmtMoney(pb.total)],
       ] }]),
-      { title: 'Shipping', right: [1], rows: [
+      ...(pdf ? [] : [{ title: 'Shipping', right: [1], rows: [
         ['Box (each side is the insert plus 2 in)', `${pb.shipping.boxDims.join(' × ')} in`],
         ['Actual weight (acrylic and box, plus 10%)', `${pb.shipping.actual.toFixed(1)} lb`],
         ['Dimensional weight (UPS, divided by 139)', `${pb.shipping.dimensional.toFixed(1)} lb`],
         ['Billable weight (the greater, rounded up)', `${pb.shipping.billable} lb`],
       ] },
-      { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) },
+      { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) }]),
       { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.map(c => [c.label, inch(c.width_in), inch(c.length_in)]) },
     ],
   };
@@ -1536,7 +1536,7 @@ function makePlanPdf() {
   const pt = 72 / MM_PER_IN;                           // points per paper millimetre: the drawing prints at 100%
   const subtitle = `Insert ${fmtEighths(state.dims.w)} x ${fmtEighths(state.dims.l)} x ${fmtEighths(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
   const drawingPage = pdfDrawScene(dr.scene, pt, (PDF_W - dr.w * pt) / 2, PDF_MARGIN);
-  const pages = [drawingPage, ...pdfSheetPages(sheetData({ prices: false }).sections, subtitle)];
+  const pages = [drawingPage, ...pdfSheetPages(sheetData({ pdf: true }).sections, subtitle)];
   const today = new Date().toISOString().slice(0, 10);
   const footer = (i, n) => {
     const label = `Drawer Insert Planner   ${today}`, right = `Page ${i} of ${n}`;
