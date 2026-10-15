@@ -32,10 +32,11 @@ const FRACS = ['', '1/8', '1/4', '3/8', '1/2', '5/8', '3/4', '7/8'];       // wr
 /* ---------- state ---------- */
 let nextId = 1;
 const state = {
-  dims: null,                     // the insert: { w, l, h } in eighths of an inch (the drawer interior less the safety gap)
-  drawer: null,                   // the drawer interior as measured: { w, l, h } in eighths
+  dims: null,                     // the insert: { w, l, h } in ten-thousandths of an inch (the drawer interior less the safety gap)
+  drawer: null,                   // the drawer interior as measured: { w, l, h } in ten-thousandths of an inch
   label: '',                      // the customer's drawer label (a few words, printed at the top of the PDF)
-  gap: 0,                         // safety gap in eighths, off each side of the width and length and once off the height
+  gap: 0,                         // safety gap (same unit), off each side of the width and length and once off the height
+  decimal: false,                 // sizes are typed as decimals instead of picked from fraction lists
   root: newLeaf(),
   eq: [],                         // locked equal sizes: [{ a: '<space id>:w', b: '<space id>:l' }, ...]
 };
@@ -54,10 +55,16 @@ function newLeaf() { return { id: nextId++ }; }
 /* ---------- helpers ---------- */
 const $ = (s, el = document) => el.querySelector(s);
 const on = (s, ev, fn) => { const el = $(s); if (el) el.addEventListener(ev, fn); };
-const eighthsToIn = n => n / 8;
+// Sizes are whole numbers of ten-thousandths of an inch (the finest the planner takes), so decimal input is exact and
+// the fraction lists (steps of 1/8 in) are just every 1250th value.
+const IN = 10000, EIGHTH = IN / 8;
+const unitsToIn = n => n / IN;
+const snapEighth = n => Math.round(n / EIGHTH) * EIGHTH;
 const fmt2 = v => v.toFixed(2);
-function fmtEighths(n) {
-  const whole = Math.floor(n / 8), r = n % 8;
+const fmtDecimal = n => String(+(n / IN).toFixed(4));                     // 12.1875, 12.5, 12
+function fmtIn(n) {                                                      // a size as fractions (12 1/8) or, in decimal mode, decimals (12.125)
+  if (state.decimal || n % EIGHTH !== 0) return fmtDecimal(n);
+  const e = n / EIGHTH, whole = Math.floor(e / 8), r = e % 8;
   return `${whole || ''}${r ? (whole ? ' ' : '') + FRACS[r] : ''}`;
 }
 const fmtMoney = v => '$' + v.toFixed(2);
@@ -71,13 +78,14 @@ function maxId(n) { return n.kids ? Math.max(n.id, ...n.kids.map(maxId)) : n.id;
 const isDefaultLayout = () => !state.root.kids;
 
 /* ---------- layout ---------- */
-// The customer measures the drawer's inside (state.drawer, in eighths of an inch) and chooses a safety gap
-// (state.gap, eighths, taken off each side of the width and length and once off the height). Everything else in
-// the planner (layout, price, exports) works on the resulting insert size, state.dims.
-const GAPS = [0, 1, 2, 3, 4];                         // 0, 1/8, 1/4, 3/8, 1/2 inch
-const DEFAULT_GAP = 1;
+// The customer measures the drawer's inside (state.drawer) and chooses a safety gap (state.gap, taken off each side
+// of the width and length and once off the height). Everything else in the planner (layout, price, exports) works on
+// the resulting insert size, state.dims.
+const GAPS = [0, 1, 2, 3, 4].map(g => g * EIGHTH);    // the list: none, 1/8, 1/4, 3/8, 1/2 inch
+const GAP_MAX = 4 * EIGHTH;                           // decimal input takes any gap from 0 to 1/2 inch
+const DEFAULT_GAP = EIGHTH;
 function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high
-  return { w: [40 + 2 * g, 376 + 2 * g], l: [40 + 2 * g, 376 + 2 * g], h: [4 + g, 120 + g] };
+  return { w: [5 * IN + 2 * g, 47 * IN + 2 * g], l: [5 * IN + 2 * g, 47 * IN + 2 * g], h: [IN / 2 + g, 15 * IN + g] };
 }
 function syncInsert() {
   const lim = drawerLimits(), clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
@@ -86,8 +94,8 @@ function syncInsert() {
 }
 function drawerSize() {
   const { w, l, h } = state.dims;
-  const H = eighthsToIn(h);
-  return { W: eighthsToIn(w), L: eighthsToIn(l), H, partH: H - WALL };   // partH: height of dividers and walls
+  const H = unitsToIn(h);
+  return { W: unitsToIn(w), L: unitsToIn(l), H, partH: H - WALL };   // partH: height of dividers and walls
 }
 
 const sameFr = (x, y) => x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 1e-6);
@@ -209,15 +217,18 @@ function loadSnapshot(text) {
   state.eq = s.eq || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (saved && saved.dims && saved.root) {
-      state.dims = saved.dims;
-      state.gap = Number.isInteger(saved.gap) && GAPS.includes(saved.gap) ? saved.gap : 0;       // older saves were sizes of the insert itself: no gap
-      state.drawer = saved.drawer || { w: saved.dims.w + 2 * state.gap, l: saved.dims.l + 2 * state.gap, h: saved.dims.h + state.gap };
+      const k = saved.u === IN ? 1 : EIGHTH;                       // saves made before decimal input counted eighths of an inch
+      const scale = o => o && { w: Math.round(o.w * k), l: Math.round(o.l * k), h: Math.round(o.h * k) };
+      state.dims = scale(saved.dims);
+      state.gap = Number.isFinite(saved.gap) && saved.gap * k >= 0 && saved.gap * k <= GAP_MAX ? Math.round(saved.gap * k) : 0;       // older saves were sizes of the insert itself: no gap
+      state.drawer = scale(saved.drawer) || { w: state.dims.w + 2 * state.gap, l: state.dims.l + 2 * state.gap, h: state.dims.h + state.gap };
+      state.decimal = !!saved.decimal || [state.drawer.w, state.drawer.l, state.drawer.h, state.gap].some(v => v % EIGHTH !== 0);
       state.root = saved.root;
       state.label = cleanLabel(saved.label);
       state.eq = Array.isArray(saved.eq) ? saved.eq : [];
@@ -466,9 +477,9 @@ function renderDrawer(svg, { interactive }) {
   // overall dimensions: extension lines, dimension line with slash ends, figure in mono type
   const ay = oy - 22, ax = ox - 24;
   out.push(line(ox, oy - 4, ox, ay - 5), line(ox + dw, oy - 4, ox + dw, ay - 5), line(ox, ay, ox + dw, ay), slash(ox, ay), slash(ox + dw, ay));
-  out.push(`<text class="dim-text" x="${ox + dw / 2}" y="${ay - 8}" text-anchor="middle">${fmtEighths(state.dims.w)}″</text>`);
+  out.push(`<text class="dim-text" x="${ox + dw / 2}" y="${ay - 8}" text-anchor="middle">${fmtIn(state.dims.w)}″</text>`);
   out.push(line(ox - 4, oy, ax - 5, oy), line(ox - 4, oy + dl, ax - 5, oy + dl), line(ax, oy, ax, oy + dl), slash(ax, oy), slash(ax, oy + dl));
-  out.push(`<text class="dim-text" transform="translate(${ax - 9} ${oy + dl / 2}) rotate(-90)" text-anchor="middle">${fmtEighths(state.dims.l)}″</text>`);
+  out.push(`<text class="dim-text" transform="translate(${ax - 9} ${oy + dl / 2}) rotate(-90)" text-anchor="middle">${fmtIn(state.dims.l)}″</text>`);
 
   // sheet stock: walls and dividers show as the gaps between the open spaces
   out.push(`<rect class="wall" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
@@ -1090,32 +1101,42 @@ function refresh() {
   $('#stock-height').textContent = `${partH.toFixed(2)}″`;
   $('#stock-spaces').textContent = String(cells.length);
   $('#stock-dividers').textContent = String(pb.dividers);
-  $('#plan-status').textContent = `${fmtEighths(state.dims.w)}″ × ${fmtEighths(state.dims.l)}″ × ${fmtEighths(state.dims.h)}″ · ${cells.length} ${cells.length === 1 ? 'space' : 'spaces'}`;
+  $('#plan-status').textContent = `${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″ · ${cells.length} ${cells.length === 1 ? 'space' : 'spaces'}`;
   renderDrawer(canvas, { interactive: true });
   updateNote();
 }
 
-function fillSelect(sel, from, to, value) {          // from, to, value in eighths of an inch
+// The select lists count eighths of an inch (value 97 = 12 1/8 in); the planner itself works in ten-thousandths.
+function fillSelect(sel, from, to, value) {
   sel.innerHTML = '';
-  for (let n = from; n <= to; n++) {
+  for (let n = from; n <= to; n += EIGHTH) {
     const o = document.createElement('option');
-    o.value = n;
-    o.textContent = `${fmtEighths(n)}″`;
+    o.value = n / EIGHTH;
+    o.textContent = `${fmtIn(n)}″`;
     sel.appendChild(o);
   }
-  sel.value = value;
+  sel.value = value / EIGHTH;
 }
+const SIZE_FIELDS = [['w', 'Width', '#dim-w'], ['l', 'Length', '#dim-l'], ['h', 'Height', '#dim-h']];
 function showSizes() {                                // the three drawer boxes, the gap, and the resulting insert size
   const lim = drawerLimits();
-  fillSelect($('#dim-w'), lim.w[0], lim.w[1], state.drawer.w);
-  fillSelect($('#dim-l'), lim.l[0], lim.l[1], state.drawer.l);
-  fillSelect($('#dim-h'), lim.h[0], lim.h[1], state.drawer.h);
+  const dec = state.decimal;
+  $('#unit-toggle').textContent = dec ? 'Switch to fractions' : 'Switch to decimals';
+  $('#unit-toggle').setAttribute('aria-pressed', String(dec));
+  $('#dec-help').hidden = !dec;
+  for (const [k, , id] of SIZE_FIELDS) {
+    $(id).hidden = dec; $(id + '-dec').hidden = !dec;
+    if (dec) $(id + '-dec').value = fmtDecimal(state.drawer[k]);
+    else fillSelect($(id), lim[k][0], lim[k][1], state.drawer[k]);
+  }
   const gap = $('#dim-gap');
-  if (!gap.options.length) for (const g of GAPS) gap.add(new Option(g ? `${fmtEighths(g)}″` : 'None', g));
-  gap.value = state.gap;
+  if (!gap.options.length) for (const g of GAPS) gap.add(new Option(g ? `${fmtIn(g)}″` : 'None', g / EIGHTH));
+  else for (const o of gap.options) o.textContent = +o.value ? `${fmtIn(o.value * EIGHTH)}″` : 'None';
+  gap.hidden = dec; $('#dim-gap-dec').hidden = !dec;
+  if (dec) $('#dim-gap-dec').value = fmtDecimal(state.gap); else gap.value = state.gap / EIGHTH;
   $('#drawer-label').value = state.label;
   const d = state.dims;
-  $('#insert-size').textContent = `${fmtEighths(d.w)}″ × ${fmtEighths(d.l)}″ × ${fmtEighths(d.h)}″`;
+  $('#insert-size').textContent = `${fmtIn(d.w)}″ × ${fmtIn(d.l)}″ × ${fmtIn(d.h)}″`;
 }
 function sizesChanged() {
   pendingNum = null;
@@ -1127,11 +1148,8 @@ function sizesChanged() {
   refresh();
 }
 // Dividers are stored as fractions of the insert, so resizing scales the whole layout.
-for (const id of ['#dim-w', '#dim-l', '#dim-h']) {
-  $(id).addEventListener('change', () => {
-    state.drawer = { w: +$('#dim-w').value, l: +$('#dim-l').value, h: +$('#dim-h').value };
-    sizesChanged();
-  });
+for (const [k, , id] of SIZE_FIELDS) {
+  $(id).addEventListener('change', () => { state.drawer[k] = +$(id).value * EIGHTH; sizesChanged(); });
 }
 $('#drawer-label').addEventListener('input', e => {
   const v = cleanLabel(e.target.value);
@@ -1139,7 +1157,45 @@ $('#drawer-label').addEventListener('input', e => {
   state.label = v;
   persist();
 });
-$('#dim-gap').addEventListener('change', () => { state.gap = +$('#dim-gap').value; sizesChanged(); });
+$('#dim-gap').addEventListener('change', () => { state.gap = +$('#dim-gap').value * EIGHTH; sizesChanged(); });
+
+// Decimal input: text boxes taking up to four decimal places, checked when the customer leaves the box or presses Enter.
+function cleanDecimalText(t) {
+  t = String(t).replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t.slice(0, 3) : t.slice(0, Math.min(i, 3)) + '.' + t.slice(i + 1).replace(/\./g, '').slice(0, 4);
+}
+function parseDecimal(t) {                           // ten-thousandths, or null when it is not a number
+  t = cleanDecimalText(t);
+  return t === '' || t === '.' ? null : Math.round(parseFloat(t) * IN);
+}
+for (const [id, name] of [...SIZE_FIELDS.map(([k, n, i]) => [i + '-dec', n]), ['#dim-gap-dec', 'Safety gap']]) {
+  const box = $(id);
+  box.addEventListener('input', () => { const t = cleanDecimalText(box.value); if (t !== box.value) box.value = t; });
+  box.addEventListener('focus', () => box.select());
+  box.addEventListener('change', () => {
+    const v = parseDecimal(box.value), gapBox = id === '#dim-gap-dec';
+    if (v === null) { showNote('Enter a number, such as 12.1875.'); showSizes(); return; }
+    const k = SIZE_FIELDS.find(f => f[2] + '-dec' === id), lim = gapBox ? [0, GAP_MAX] : drawerLimits()[k[0]];
+    const c = clamp(v, lim[0], lim[1]);
+    if (c !== v) showNote(`${name} must be between ${fmtDecimal(lim[0])} and ${fmtDecimal(lim[1])} in.`);
+    if (gapBox) state.gap = c; else state.drawer[k[0]] = c;
+    sizesChanged();
+  });
+  box.addEventListener('keydown', e => { if (e.key === 'Enter') box.blur(); });
+}
+$('#unit-toggle').addEventListener('click', () => {
+  if (state.decimal) {                               // back to fractions: round every size to the nearest 1/8 in
+    const before = JSON.stringify([state.drawer, state.gap]);
+    state.gap = clamp(snapEighth(state.gap), 0, GAP_MAX);
+    for (const k of ['w', 'l', 'h']) state.drawer[k] = snapEighth(state.drawer[k]);
+    state.decimal = false;
+    syncInsert();                                    // the limits move with the gap: keep every size on the 1/8 in grid
+    for (const k of ['w', 'l', 'h']) state.drawer[k] = snapEighth(state.drawer[k]);
+    sizesChanged();
+    if (JSON.stringify([state.drawer, state.gap]) !== before) showNote('Sizes were rounded to the nearest 1/8″ for the fraction lists.', 'warn', 6000);
+  } else { state.decimal = true; sizesChanged(); }
+});
 
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
@@ -1274,8 +1330,8 @@ function drawing() {
     Ln(x, y1, x, y2); Ln(x - 1, y1 + 1, x + 1, y1 - 1); Ln(x - 1, y2 + 1, x + 1, y2 - 1);
     T(x - 2.4, (y1 + y2) / 2, label, 3.2, { anchor: 'middle', rot: -90 });
   };
-  dimH(ox, ox + planW, oy - 9, `${fmtEighths(state.dims.w)} in`);
-  dimV(oy, oy + planL, ox - 9, `${fmtEighths(state.dims.l)} in`);
+  dimH(ox, ox + planW, oy - 9, `${fmtIn(state.dims.w)} in`);
+  dimV(oy, oy + planL, ox - 9, `${fmtIn(state.dims.l)} in`);
 
   // front marker
   R(ox + planW / 2 - 8, oy + planL + 3, 16, 2, { fill: '#555', rx: 1 });
@@ -1284,7 +1340,7 @@ function drawing() {
   // title block
   R(2, titleTop, pageW - 4, titleH, { stroke: '#111', sw: 0.4 });
   T(6, titleTop + 8, 'Drawer insert plan, seen from above', 4.2, { bold: true });
-  T(6, titleTop + 15, `Insert ${fmtEighths(state.dims.w)} × ${fmtEighths(state.dims.l)} × ${fmtEighths(state.dims.h)} in (width, length, height), for a drawer ${fmtEighths(state.drawer.w)} × ${fmtEighths(state.drawer.l)} × ${fmtEighths(state.drawer.h)} in inside`, 2.9);
+  T(6, titleTop + 15, `Insert ${fmtIn(state.dims.w)} × ${fmtIn(state.dims.l)} × ${fmtIn(state.dims.h)} in (width, length, height), for a drawer ${fmtIn(state.drawer.w)} × ${fmtIn(state.drawer.l)} × ${fmtIn(state.drawer.h)} in inside`, 2.9);
   T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
   T(6, titleTop + 26, 'Each space shows width × length in inches.', 2.9, { fill: '#444' });
   if (callouts.length) T(6, titleTop + 31.5, 'Small spaces are lettered in the margin; sizes are on page 2.', 2.9, { fill: '#444' });
@@ -1333,7 +1389,7 @@ function designData() {
   const sorted = sortCells(cells);
   const r = v => Math.round(v * 10000) / 10000;
   return {
-    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: eighthsToIn(state.drawer.w), length: eighthsToIn(state.drawer.l), height: eighthsToIn(state.drawer.h) }, safety_gap_in: eighthsToIn(state.gap), drawer_label: drawerLabel() },   // drawer.* below is the insert itself
+    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: unitsToIn(state.drawer.w), length: unitsToIn(state.drawer.l), height: unitsToIn(state.drawer.h) }, safety_gap_in: unitsToIn(state.gap), drawer_label: drawerLabel() },   // drawer.* below is the insert itself
     drawer: { width_in: r(W), length_in: r(L), height_in: r(H), thickness_in: WALL, part_height_in: r(partH) },   // height_in is overall
     dividers: physicalDividers(divs).map((d, i) => ({
       id: `divider-${i}`, orientation: d.axis === 'v' ? 'vertical' : 'horizontal',
@@ -1371,13 +1427,14 @@ function sheetData({ pdf = false } = {}) {
   const cuts = cutList();
   const pb = priceBreakdown();
   const inch = v => v.toFixed(2) + '"';
+  const exact = (v, min = 2) => { let t = String(+v.toFixed(4)); const d = (t.split('.')[1] || '').length; if (d < min) t = v.toFixed(min); return t + '"'; };      // up to four decimals, at least two
   return {
     sections: [
       { title: 'Sizes', right: [1], rows: [
         ...(drawerLabel() ? [['Drawer label', drawerLabel()]] : []),
-        ['Drawer interior, as measured', `${inch(eighthsToIn(state.drawer.w))} × ${inch(eighthsToIn(state.drawer.l))} × ${inch(eighthsToIn(state.drawer.h))}`],
-        ['Safety gap (each side of the width and length, once off the height)', `${eighthsToIn(state.gap).toFixed(3)}"`],
-        ['Insert size (width × length × height)', `${inch(W)} × ${inch(L)} × ${inch(H)}`],
+        ['Drawer interior, as measured', `${exact(unitsToIn(state.drawer.w))} × ${exact(unitsToIn(state.drawer.l))} × ${exact(unitsToIn(state.drawer.h))}`],
+        ['Safety gap (each side of the width and length, once off the height)', `${exact(unitsToIn(state.gap), 3)}`],
+        ['Insert size (width × length × height)', `${exact(W)} × ${exact(L)} × ${exact(H)}`],
         ['Divider height (insert height less one sheet)', inch(partH)],
         ['Sheet thickness', inch(WALL)],
         ['Open spaces', String(data.compartments.length)],
@@ -1554,7 +1611,7 @@ function pdfFile(pages, title) {
 function makePlanPdf() {
   const dr = drawing();
   const pt = 72 / MM_PER_IN;                           // points per paper millimetre: the drawing prints at 100%
-  const subtitle = `Insert ${fmtEighths(state.dims.w)} x ${fmtEighths(state.dims.l)} x ${fmtEighths(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
+  const subtitle = `Insert ${fmtIn(state.dims.w)} x ${fmtIn(state.dims.l)} x ${fmtIn(state.dims.h)} in   |   drawing at 1:${dr.ratio}`;
   const drawingPage = pdfDrawScene(dr.scene, pt, (PDF_W - dr.w * pt) / 2, PDF_MARGIN);
   const pages = [drawingPage, ...pdfSheetPages(sheetData({ pdf: true }).sections, subtitle)];
   const today = new Date().toISOString().slice(0, 10);
@@ -1629,7 +1686,7 @@ on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
 /* ---------- init ---------- */
 if (!restore()) {                                                  // opens ready to work: an 18 x 22 x 3 in drawer
   state.gap = DEFAULT_GAP;
-  state.drawer = { w: 144, l: 176, h: 24 };
+  state.drawer = { w: 144 * EIGHTH, l: 176 * EIGHTH, h: 24 * EIGHTH };
   syncInsert();
 }
 resetHistory();
@@ -1645,10 +1702,11 @@ if (EMBED) {
   window.addEventListener('message', e => {
     const m = e.data;
     if (!m || m.type !== 'drawer-insert-init' || !m.dims) return;
-    const eighths = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(+v * 8)));
-    const w = eighths(m.dims.width, 40, 376), l = eighths(m.dims.length, 40, 376), h = eighths(m.dims.height, 4, 120);
+    const size = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(+v * IN)));
+    const w = size(m.dims.width, 5 * IN, 47 * IN), l = size(m.dims.length, 5 * IN, 47 * IN), h = size(m.dims.height, IN / 2, 15 * IN);
     if (![w, l, h].every(Number.isFinite)) return;
     state.drawer = { w: w + 2 * state.gap, l: l + 2 * state.gap, h: h + state.gap };
+    if ([w, l, h].some(v => v % EIGHTH !== 0)) state.decimal = true;           // a size that is not a whole 1/8 in needs decimal input
     sizesChanged();
   });
   function sendPlan() {

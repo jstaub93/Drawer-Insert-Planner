@@ -69,6 +69,21 @@ select {
   padding: 8px 28px 8px 10px;
   min-width: 132px;
 }
+
+.dec-input {
+  font: 600 17px var(--font-mono);
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid #aebcc6;
+  border-radius: 4px;
+  padding: 8px 10px;
+  width: 132px;
+  box-sizing: border-box;
+  text-align: right;
+}
+.dec-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.link-btn { display: inline-block; margin: 0 0 12px; padding: 6px 12px; font: 600 13px var(--font-body); color: var(--accent); background: #fff; border: 1px solid var(--accent); border-radius: 999px; cursor: pointer; }
+.link-btn:hover { background: var(--accent-soft); }
 select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- facts list ---------- */

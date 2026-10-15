@@ -29,15 +29,21 @@
     <section class="card" aria-labelledby="h-size">
       <h2 id="h-size">Drawer interior</h2>
       <p class="note">Measure inside the drawer box, in inches. Select a safety gap. Then, check the final insert dimensions.</p>
+      <button type="button" class="link-btn" id="unit-toggle" aria-pressed="false">Switch to decimals</button>
+      <p class="note small" id="dec-help" hidden>Type each size in inches, up to four decimal places (such as 12.1875), then press Enter or move to the next box.</p>
       <div class="fields">
         <label for="dim-w">Width <small>side to side</small></label>
         <select id="dim-w"></select>
+        <input type="text" id="dim-w-dec" class="dec-input" inputmode="decimal" autocomplete="off" aria-label="Width in inches, up to four decimals" hidden>
         <label for="dim-l">Length <small>front to back</small></label>
         <select id="dim-l"></select>
+        <input type="text" id="dim-l-dec" class="dec-input" inputmode="decimal" autocomplete="off" aria-label="Length in inches, up to four decimals" hidden>
         <label for="dim-h">Height <small>floor to top</small></label>
         <select id="dim-h"></select>
+        <input type="text" id="dim-h-dec" class="dec-input" inputmode="decimal" autocomplete="off" aria-label="Height in inches, up to four decimals" hidden>
         <label for="dim-gap">Safety gap <small>each side</small></label>
         <select id="dim-gap"></select>
+        <input type="text" id="dim-gap-dec" class="dec-input" inputmode="decimal" autocomplete="off" aria-label="Safety gap in inches, up to four decimals" hidden>
       </div>
       <div class="insert-box" aria-live="polite">
         <span>Your insert will be</span>
