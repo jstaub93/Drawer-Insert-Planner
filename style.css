@@ -263,6 +263,10 @@ body.editor-full .plan-price { display: inline; }
 body.editor-full .rail { display: none; }
 @media (max-width: 900px) { body.editor-full .stage { height: auto; min-height: 0; } }
 
+/* the drawer label field */
+.text-input { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 10px 12px; font: 500 15px var(--font-body); color: var(--ink); background: #fff; border: 1px solid #aebdc8; border-radius: 4px; }
+.text-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* the insert size, after the safety gap */
 .insert-box { margin-top: 12px; padding: 10px 12px; border: 1px solid #b5d9d3; background: var(--accent-soft); border-radius: 4px; display: grid; gap: 2px; }
 .insert-box span { font: 600 12px var(--font-body); color: var(--ink-2); letter-spacing: .04em; text-transform: uppercase; }

@@ -34,11 +34,20 @@ let nextId = 1;
 const state = {
   dims: null,                     // the insert: { w, l, h } in eighths of an inch (the drawer interior less the safety gap)
   drawer: null,                   // the drawer interior as measured: { w, l, h } in eighths
+  label: '',                      // the customer's drawer label (a few words, printed at the top of the PDF)
   gap: 0,                         // safety gap in eighths, off each side of the width and length and once off the height
   root: newLeaf(),
   eq: [],                         // locked equal sizes: [{ a: '<space id>:w', b: '<space id>:l' }, ...]
 };
 const hist = { stack: [], i: -1 };
+
+// The drawer label: a few words in plain printable characters (the PDF's built-in font has no others).
+const LABEL_MAX = 30;
+function cleanLabel(v) {
+  return String(v == null ? '' : v).replace(/[‘’′]/g, "'").replace(/[“”″]/g, '"').replace(/[–—]/g, '-')
+    .replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').slice(0, LABEL_MAX);
+}
+const drawerLabel = () => cleanLabel(state.label).trim();
 
 function newLeaf() { return { id: nextId++ }; }
 
@@ -200,7 +209,7 @@ function loadSnapshot(text) {
   state.eq = s.eq || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ dims: state.dims, drawer: state.drawer, gap: state.gap, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
@@ -210,6 +219,7 @@ function restore() {
       state.gap = Number.isInteger(saved.gap) && GAPS.includes(saved.gap) ? saved.gap : 0;       // older saves were sizes of the insert itself: no gap
       state.drawer = saved.drawer || { w: saved.dims.w + 2 * state.gap, l: saved.dims.l + 2 * state.gap, h: saved.dims.h + state.gap };
       state.root = saved.root;
+      state.label = cleanLabel(saved.label);
       state.eq = Array.isArray(saved.eq) ? saved.eq : [];
       nextId = maxId(state.root) + 1;
       return true;
@@ -1103,6 +1113,7 @@ function showSizes() {                                // the three drawer boxes,
   const gap = $('#dim-gap');
   if (!gap.options.length) for (const g of GAPS) gap.add(new Option(g ? `${fmtEighths(g)}″` : 'None', g));
   gap.value = state.gap;
+  $('#drawer-label').value = state.label;
   const d = state.dims;
   $('#insert-size').textContent = `${fmtEighths(d.w)}″ × ${fmtEighths(d.l)}″ × ${fmtEighths(d.h)}″`;
 }
@@ -1122,6 +1133,12 @@ for (const id of ['#dim-w', '#dim-l', '#dim-h']) {
     sizesChanged();
   });
 }
+$('#drawer-label').addEventListener('input', e => {
+  const v = cleanLabel(e.target.value);
+  if (v !== e.target.value) e.target.value = v;
+  state.label = v;
+  persist();
+});
 $('#dim-gap').addEventListener('change', () => { state.gap = +$('#dim-gap').value; sizesChanged(); });
 
 $('#undo').addEventListener('click', undo);
@@ -1187,8 +1204,9 @@ function drawing() {
   const { cells, divs } = currentLayout();
   const physical = physicalDividers(divs);
   const ratios = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48];
-  const M = { l: 26, r: 16, t: 24 };
-  const ratio = ratios.find(r => (W * MM_PER_IN) / r + M.l + M.r <= 190.5 && (L * MM_PER_IN) / r + M.t <= 165) || ratios[ratios.length - 1];
+  const label = drawerLabel();
+  const M = { l: 26, r: 16, t: label ? 30 : 24 };            // room above the drawing for the drawer label
+  const ratio = ratios.find(r => (W * MM_PER_IN) / r + M.l + M.r <= 190.5 && (L * MM_PER_IN) / r + M.t <= (label ? 172 : 165)) || ratios[ratios.length - 1];
   const k = MM_PER_IN / ratio;          // paper millimetres per inch of drawer
   const planW = W * k, planL = L * k;
   const pageW = Math.max(M.l + planW + M.r, 140);
@@ -1204,6 +1222,7 @@ function drawing() {
   const T = (x, y, s, size, o = {}) => scene.push({ k: 'text', x, y, s, size, anchor: o.anchor || 'start', bold: !!o.bold, fill: o.fill || '#000', rot: o.rot || 0, ls: o.ls || 0 });
 
   R(0, 0, pageW, pageH, { fill: '#fff' });
+  if (label) T(pageW / 2, 9, label, Math.min(6.5, (pageW - 14) / pdfWidth(label, 1, true)), { bold: true, anchor: 'middle' });
   R(ox, oy, planW, planL, { fill: '#c9c9c9', stroke: '#111', sw: 0.5 });
   const sorted = sortCells(cells);
   const callouts = [], labels = [];          // callouts: spaces too small for their letter, labelled in the margin instead
@@ -1314,7 +1333,7 @@ function designData() {
   const sorted = sortCells(cells);
   const r = v => Math.round(v * 10000) / 10000;
   return {
-    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: eighthsToIn(state.drawer.w), length: eighthsToIn(state.drawer.l), height: eighthsToIn(state.drawer.h) }, safety_gap_in: eighthsToIn(state.gap) },   // drawer.* below is the insert itself
+    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: eighthsToIn(state.drawer.w), length: eighthsToIn(state.drawer.l), height: eighthsToIn(state.drawer.h) }, safety_gap_in: eighthsToIn(state.gap), drawer_label: drawerLabel() },   // drawer.* below is the insert itself
     drawer: { width_in: r(W), length_in: r(L), height_in: r(H), thickness_in: WALL, part_height_in: r(partH) },   // height_in is overall
     dividers: physicalDividers(divs).map((d, i) => ({
       id: `divider-${i}`, orientation: d.axis === 'v' ? 'vertical' : 'horizontal',
@@ -1326,7 +1345,7 @@ function designData() {
     price_estimate: {
       drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
     },
-    order_fields: { divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea, shipping_weight_lb: priceBreakdown().shipping.billable },
+    order_fields: { drawer_label: drawerLabel(), divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea, shipping_weight_lb: priceBreakdown().shipping.billable },
     shipping: (() => { const s = priceBreakdown().shipping; return { box_in: s.boxDims, actual_weight_lb: r(s.actual), dimensional_weight_lb: r(s.dimensional), billable_weight_lb: s.billable }; })(),
   };
 }
@@ -1355,6 +1374,7 @@ function sheetData({ pdf = false } = {}) {
   return {
     sections: [
       { title: 'Sizes', right: [1], rows: [
+        ...(drawerLabel() ? [['Drawer label', drawerLabel()]] : []),
         ['Drawer interior, as measured', `${inch(eighthsToIn(state.drawer.w))} × ${inch(eighthsToIn(state.drawer.l))} × ${inch(eighthsToIn(state.drawer.h))}`],
         ['Safety gap (each side of the width and length, once off the height)', `${eighthsToIn(state.gap).toFixed(3)}"`],
         ['Insert size (width × length × height)', `${inch(W)} × ${inch(L)} × ${inch(H)}`],
@@ -1638,7 +1658,7 @@ if (EMBED) {
     const buf = pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength);
     window.parent.postMessage({
       type: 'drawer-insert-plan', version: 1,
-      dims: { width: W, length: L, height: H },
+      dims: { width: W, length: L, height: H }, label: drawerLabel(),
       dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100, weight: pb.shipping.billable,
       json: jsonText(), pdf: buf,
     }, '*', [buf]);
