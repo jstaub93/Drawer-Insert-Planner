@@ -130,6 +130,32 @@ function transposeAt(n, axis) {
  * horizontal one butts against its face. */
 const faceId = (n, k) => n.kids[1].id + k / 1000;                  // the spaces the L-shaped space is divided into
 const ellFractions = (e, key) => (Array.isArray(e[key]) ? e[key] : []);
+/* Further dividers in the L-shaped space are kept as parallel lists: cx / cy are their positions (fractions of the space
+ * less one sheet), ax / ay where along their length each was added (a fraction), and ox / oy the order they were added in
+ * (e.seq counts). A divider runs from where it was added until it meets a wall, the L, or a divider added BEFORE it: the
+ * first divider runs on, a later one stops against it. (Dividers with no order are all equally old: they all run through.) */
+const CHORD_LISTS = { x: ['cx', 'ax', 'ox'], y: ['cy', 'ay', 'oy'] };
+function ellNormalize(e) {
+  for (const kind of ['x', 'y']) {
+    const [P, A, O] = CHORD_LISTS[kind];
+    e[P] = ellFractions(e, P);
+    e[A] = e[P].map((_, i) => (Number.isFinite((e[A] || [])[i]) ? e[A][i] : 0.5));
+    e[O] = e[P].map((_, i) => (Number.isFinite((e[O] || [])[i]) ? e[O][i] : 0));
+  }
+  e.seq = Number.isFinite(e.seq) ? e.seq : 0;
+  return e;
+}
+function ellAddChord(e, kind, f, anchor) {
+  ellNormalize(e);
+  const [P, A, O] = CHORD_LISTS[kind];
+  e.seq += 1;
+  e[P].push(f); e[A].push(anchor); e[O].push(e.seq);
+}
+function ellRemoveChord(e, kind, i) {
+  ellNormalize(e);
+  for (const key of CHORD_LISTS[kind]) e[key].splice(i, 1);
+}
+const ellClone = e => JSON.parse(JSON.stringify(ellNormalize({ ...e })));
 
 // rect without its overlap (ow x oh) at the corner `left`/`top`: the polygon (null if nothing is left), the overlap, and the two arms
 function shapeMinusCorner(r, ow, oh, left, top) {
@@ -143,6 +169,41 @@ function shapeMinusCorner(r, ow, oh, left, top) {
   return { poly, cut, legs };
 }
 
+// The spaces left when the pocket and the dividers are taken out of the region: connected areas, each a rectangle or an L
+function ellFaces(x, y, w, h, cut, rects, left, top) {
+  const uniq = arr => { const out = []; for (const v of [...arr].sort((p, q) => p - q)) if (!out.length || v - out[out.length - 1] > EPS) out.push(v); return out; };
+  const xs = uniq([x, x + w, cut.x, cut.x + cut.w, ...rects.flatMap(r => [r.x, r.x + r.w])].filter(v => v >= x - EPS && v <= x + w + EPS));
+  const ys = uniq([y, y + h, cut.y, cut.y + cut.h, ...rects.flatMap(r => [r.y, r.y + r.h])].filter(v => v >= y - EPS && v <= y + h + EPS));
+  const nx = xs.length - 1, ny = ys.length - 1, comp = new Array(nx * ny).fill(-2);
+  const inside = (r, px, py) => px > r.x && px < r.x + r.w && py > r.y && py < r.y + r.h;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const px = (xs[i] + xs[i + 1]) / 2, py = (ys[j] + ys[j + 1]) / 2;
+    comp[j * nx + i] = inside(cut, px, py) || rects.some(r => inside(r, px, py)) ? -1 : -2;      // -1 a divider or the pocket, -2 free
+  }
+  const boxes = [];
+  for (let start = 0; start < comp.length; start++) {
+    if (comp[start] !== -2) continue;
+    const id = boxes.length, stack = [start], box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    comp[start] = id;
+    while (stack.length) {
+      const c = stack.pop(), i = c % nx, j = (c - i) / nx;
+      box.x0 = Math.min(box.x0, xs[i]); box.x1 = Math.max(box.x1, xs[i + 1]); box.y0 = Math.min(box.y0, ys[j]); box.y1 = Math.max(box.y1, ys[j + 1]);
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ni = i + di, nj = j + dj;
+        if (ni < 0 || nj < 0 || ni >= nx || nj >= ny || comp[nj * nx + ni] !== -2) continue;
+        comp[nj * nx + ni] = id; stack.push(nj * nx + ni);
+      }
+    }
+    boxes.push(box);
+  }
+  const faces = boxes.map(b => {
+    const r = { x: b.x0, y: b.y0, w: b.x1 - b.x0, h: b.y1 - b.y0 };
+    const ow = Math.min(r.x + r.w, cut.x + cut.w) - Math.max(r.x, cut.x), oh = Math.min(r.y + r.h, cut.y + cut.h) - Math.max(r.y, cut.y);
+    return ow > EPS && oh > EPS && ow < r.w - EPS && oh < r.h - EPS ? { ...r, ...shapeMinusCorner(r, ow, oh, left, top) } : r;     // an L if it wraps round the pocket's corner
+  });
+  return faces.sort((p, q) => (Math.abs(p.y - q.y) > EPS ? p.y - q.y : p.x - q.x));
+}
+
 function ellGeom(e, x, y, w, h) {
   const pw = e.fx * (w - WALL), ph = e.fy * (h - WALL), left = e.corner[1] === 'l', top = e.corner[0] === 't';
   const vx = left ? x + pw : x + w - pw - WALL, hy = top ? y + ph : y + h - ph - WALL;
@@ -150,31 +211,34 @@ function ellGeom(e, x, y, w, h) {
   const hx0 = left ? x : vx + WALL, hx1 = left ? vx : x + w;
   const cw = pw + WALL, ch = ph + WALL;
   const cut = { x: left ? x : x + w - cw, y: top ? y : y + h - ch, w: cw, h: ch };       // the pocket and its two dividers
-  // the dividers further dividing the L-shaped space: each runs across all of it, up to a wall or the L
-  const chords = [];
-  const xs = ellFractions(e, 'cx').map(f => x + f * (w - WALL)), ys = ellFractions(e, 'cy').map(f => y + f * (h - WALL));
-  xs.forEach((a, i) => {
-    const inPocket = left ? a + WALL <= cut.x + cut.w + EPS : a >= cut.x - EPS;
-    const [c0, c1] = inPocket ? (top ? [cut.y + cut.h, y + h] : [y, cut.y]) : [y, y + h];
-    chords.push({ kind: 'x', i, axis: 'v', x: a, y: c0, w: WALL, h: c1 - c0, off: a - x });
-  });
-  ys.forEach((a, i) => {
-    const inPocket = top ? a + WALL <= cut.y + cut.h + EPS : a >= cut.y - EPS;
-    const [c0, c1] = inPocket ? (left ? [cut.x + cut.w, x + w] : [x, cut.x]) : [x, x + w];
-    chords.push({ kind: 'y', i, axis: 'h', x: c0, y: a, w: c1 - c0, h: WALL, off: a - y });
-  });
-  // the spaces: the grid the chords make, less the pocket
-  const edges = (lo, hi, at) => { const out = []; let q = lo; for (const a of at) { out.push([q, a]); q = a + WALL; } out.push([q, hi]); return out; };
-  const cols = edges(x, x + w, xs), rows = edges(y, y + h, ys), faces = [];
-  for (const [r0, r1] of rows) for (const [c0, c1] of cols) {
-    const cell = { x: c0, y: r0, w: c1 - c0, h: r1 - r0 };
-    const ow = Math.min(cell.x + cell.w, cut.x + cut.w) - Math.max(cell.x, cut.x), oh = Math.min(cell.y + cell.h, cut.y + cut.h) - Math.max(cell.y, cut.y);
-    if (ow <= EPS || oh <= EPS) faces.push({ ...cell });
-    else if (ow >= cell.w - EPS && oh >= cell.h - EPS) continue;                         // inside the pocket
-    else if (ow >= cell.w - EPS) faces.push(top ? { x: cell.x, y: cell.y + oh, w: cell.w, h: cell.h - oh } : { x: cell.x, y: cell.y, w: cell.w, h: cell.h - oh });
-    else if (oh >= cell.h - EPS) faces.push(left ? { x: cell.x + ow, y: cell.y, w: cell.w - ow, h: cell.h } : { x: cell.x, y: cell.y, w: cell.w - ow, h: cell.h });
-    else faces.push({ ...cell, ...shapeMinusCorner(cell, ow, oh, left, top) });
+  // further dividers: each starts from where it was added and runs until it meets a wall, the L, or an older divider
+  const items = [];
+  ellFractions(e, 'cx').forEach((f, i) => items.push({ kind: 'x', i, a: x + f * (w - WALL), anchor: y + (Number.isFinite((e.ax || [])[i]) ? e.ax[i] : 0.5) * h, n: Number.isFinite((e.ox || [])[i]) ? e.ox[i] : 0 }));
+  ellFractions(e, 'cy').forEach((f, i) => items.push({ kind: 'y', i, a: y + f * (h - WALL), anchor: x + (Number.isFinite((e.ay || [])[i]) ? e.ay[i] : 0.5) * w, n: Number.isFinite((e.oy || [])[i]) ? e.oy[i] : 0 }));
+  const made = [];
+  for (const it of [...items].sort((p, q) => p.n - q.n)) {
+    let c;
+    if (it.kind === 'x') {
+      const inPocket = left ? it.a + WALL <= cut.x + cut.w + EPS : it.a >= cut.x - EPS;
+      let [c0, c1] = inPocket ? (top ? [cut.y + cut.h, y + h] : [y, cut.y]) : [y, y + h];
+      for (const p of made) {                                   // older dividers across its path stop it
+        if (p.kind !== 'y' || p.n >= it.n || it.a + WALL <= p.x + EPS || it.a >= p.x + p.w - EPS || p.y + WALL <= c0 + EPS || p.y >= c1 - EPS) continue;
+        if (it.anchor >= p.y + WALL / 2) c0 = Math.max(c0, p.y + WALL); else c1 = Math.min(c1, p.y);
+      }
+      c = { ...it, axis: 'v', x: it.a, y: c0, w: WALL, h: c1 - c0, off: it.a - x };
+    } else {
+      const inPocket = top ? it.a + WALL <= cut.y + cut.h + EPS : it.a >= cut.y - EPS;
+      let [c0, c1] = inPocket ? (left ? [cut.x + cut.w, x + w] : [x, cut.x]) : [x, x + w];
+      for (const p of made) {
+        if (p.kind !== 'x' || p.n >= it.n || it.a + WALL <= p.y + EPS || it.a >= p.y + p.h - EPS || p.x + WALL <= c0 + EPS || p.x >= c1 - EPS) continue;
+        if (it.anchor >= p.x + WALL / 2) c0 = Math.max(c0, p.x + WALL); else c1 = Math.min(c1, p.x);
+      }
+      c = { ...it, axis: 'h', x: c0, y: it.a, w: c1 - c0, h: WALL, off: it.a - y };
+    }
+    made.push(c);
   }
+  const chords = made.sort((p, q) => (p.kind === q.kind ? p.i - q.i : p.kind < q.kind ? -1 : 1));
+  const faces = ellFaces(x, y, w, h, cut, chords, left, top);
   return { pw, ph, left, top, cut, chords, faces, corner: { x: vx + WALL / 2, y: hy + WALL / 2 },
     pocket: { x: left ? x : x + w - pw, y: top ? y : y + h - ph, w: pw, h: ph },
     v: { x: vx, y: vy0, w: WALL, h: vy1 - vy0 }, hz: { x: hx0, y: hy, w: hx1 - hx0, h: WALL } };
@@ -188,19 +252,24 @@ function ellBands(n, w, h, kind) {
   bands.push({ off: arm, chord: -1 });
   return bands.sort((p, q) => p.off - q.off);
 }
-// Is every divider in the L-shaped space at least MIN_CELL from the next one and from the sides? (A divider exactly in
-// line with the L's own is allowed: it carries that divider on across the L-shaped space.)
+// Every divider in the L-shaped space must be MIN_CELL clear of the sides and of any divider running alongside it that
+// faces it (they overlap along their length). A divider in line with the L's own, picking up where it ends, is fine.
 function ellValid(n, w, h) {
-  for (const [kind, tot] of [['x', w], ['y', h]]) {
-    let end = 0, last = null;
-    for (const b of ellBands(n, w, h, kind)) {
-      if (last && Math.abs(b.off - last.off) < EPS && (b.chord === -1 || last.chord === -1)) continue;
-      if (b.off - end < MIN_CELL - EPS) return false;
-      end = b.off + WALL; last = b;
-    }
-    if (tot - end < MIN_CELL - EPS) return false;
+  const g = ellGeom(n.ell, 0, 0, w, h);
+  const all = [{ kind: 'x', axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h, arm: true }, { kind: 'y', axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h, arm: true }, ...g.chords];
+  for (const c of all) {
+    const lo = c.axis === 'v' ? c.x : c.y, tot = c.axis === 'v' ? w : h;
+    if (lo < MIN_CELL - EPS || tot - (lo + WALL) < MIN_CELL - EPS) return false;
   }
-  return true;
+  for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+    const p = all[i], q = all[j];
+    if (p.axis !== q.axis) continue;
+    const along = p.axis === 'v' ? [Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y)] : [Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x)];
+    if (along[0] <= EPS) continue;
+    const gap = p.axis === 'v' ? Math.abs(p.x - q.x) - WALL : Math.abs(p.y - q.y) - WALL;
+    if (gap < MIN_CELL - EPS) return false;
+  }
+  return g.chords.every(c => (c.axis === 'v' ? c.h : c.w) > EPS);
 }
 
 function layoutTree(root, W, L) {
@@ -1041,17 +1110,36 @@ function ellFromLines(R, lines) {
     for (const l of lines) {
       if (l === V || l === H) continue;
       const arm = l.axis === 'v' ? H : V, a = arm.pos, b = arm.pos + WALL;
-      if (l.s < a - EPS && l.e > b + EPS && (l.axis === 'v' ? true : true)) others.push({ ...l, e: a }, { ...l, s: b });
+      if (l.s < a - EPS && l.e > b + EPS) others.push({ ...l, e: a }, { ...l, s: b });
       else others.push(l);
     }
     const inside = l => (l.axis === 'v'
       ? l.pos >= pocket.x - EPS && l.pos + WALL <= pocket.x + pocket.w + EPS && l.s >= pocket.y - EPS && l.e <= pocket.y + pocket.h + EPS
       : l.pos >= pocket.y - EPS && l.pos + WALL <= pocket.y + pocket.h + EPS && l.s >= pocket.x - EPS && l.e <= pocket.x + pocket.w + EPS);
-    const inPocket = others.filter(inside), chords = others.filter(l => !inside(l));
-    const e = { corner: (top ? 't' : 'b') + (left ? 'l' : 'r'), fx: pw / (R.w - WALL), fy: ph / (R.h - WALL),
-      cx: chords.filter(l => l.axis === 'v').map(l => (l.pos - R.x) / (R.w - WALL)).sort((p, q) => p - q), cy: chords.filter(l => l.axis === 'h').map(l => (l.pos - R.y) / (R.h - WALL)).sort((p, q) => p - q) };
-    if (!e.cx.length) delete e.cx;
-    if (!e.cy.length) delete e.cy;
+    const inPocket = others.filter(inside);
+    let chords = others.filter(l => !inside(l));
+    // collinear dividers that were merged across a divider between them are separate dividers
+    for (let guard = 0; guard < 50; guard++) {
+      const hit = chords.find(l => chords.some(q => q.axis !== l.axis && l.s < q.pos - EPS && l.e > q.pos + WALL + EPS && q.s <= l.pos + WALL / 2 && q.e >= l.pos + WALL / 2));
+      if (!hit) break;
+      const q = chords.find(q => q.axis !== hit.axis && hit.s < q.pos - EPS && hit.e > q.pos + WALL + EPS && q.s <= hit.pos + WALL / 2 && q.e >= hit.pos + WALL / 2);
+      chords = chords.filter(c => c !== hit).concat([{ ...hit, e: q.pos }, { ...hit, s: q.pos + WALL }]);
+    }
+    // the order they were added in: a divider that ends against another was added after it
+    const blockers = c => chords.filter(q => q.axis !== c.axis && q.s <= c.pos + WALL / 2 + EPS && q.e >= c.pos + WALL / 2 - EPS && (Math.abs(c.e - q.pos) < EPS || Math.abs(c.s - (q.pos + WALL)) < EPS));
+    const rank = new Map(), pending = new Set(chords);
+    for (let guard = 0; pending.size && guard < 100; guard++) {
+      const ready = [...pending].filter(c => blockers(c).every(q => rank.has(q)));
+      if (!ready.length) break;
+      for (const c of ready) { rank.set(c, rank.size + 1); pending.delete(c); }
+    }
+    if (pending.size) continue;
+    const e = { corner: (top ? 't' : 'b') + (left ? 'l' : 'r'), fx: pw / (R.w - WALL), fy: ph / (R.h - WALL), cx: [], ax: [], ox: [], cy: [], ay: [], oy: [], seq: chords.length };
+    for (const c of chords) {
+      const mid = (c.s + c.e) / 2;
+      if (c.axis === 'v') { e.cx.push((c.pos - R.x) / (R.w - WALL)); e.ax.push((mid - R.y) / R.h); e.ox.push(rank.get(c)); }
+      else { e.cy.push((c.pos - R.y) / (R.h - WALL)); e.ay.push((mid - R.x) / R.w); e.oy.push(rank.get(c)); }
+    }
     const g = ellGeom(e, R.x, R.y, R.w, R.h);          // each of those must be exactly the divider the L-shaped space would have there
     const ok = chords.every(l => g.chords.some(c => c.axis === l.axis && Math.abs((l.axis === 'v' ? c.x - l.pos : c.y - l.pos)) < EPS && Math.abs((l.axis === 'v' ? c.y : c.x) - l.s) < EPS && Math.abs((l.axis === 'v' ? c.y + c.h : c.x + c.w) - l.e) < EPS));
     if (!ok || !ellValid({ ell: e }, R.w, R.h)) continue;
@@ -1209,22 +1297,42 @@ $('#divpop-close').addEventListener('click', () => closePopover());
 
 /* ---------- L-shaped dividers ---------- */
 let ellDrag = null, chordDrag = null, ellNode = null, popoverFace = null, popoverRect = null;
-// How far a divider may move (offset of its edge from the edge of the space): MIN_CELL clear of its neighbours and the sides
-function bandRange(bands, at, tot) {
-  return [at ? bands[at - 1].off + WALL + MIN_CELL : MIN_CELL, (at < bands.length - 1 ? bands[at + 1].off : tot) - WALL - MIN_CELL];
+// The dividers of an L-shaped space as rectangles (the L's own two, and the rest), in the space's own coordinates
+function ellItems(n, w, h) {
+  const g = ellGeom(n.ell, 0, 0, w, h);
+  return [{ kind: 'x', i: -1, axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h }, { kind: 'y', i: -1, axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h }, ...g.chords];
+}
+// The nearest divider on each side that faces this one (they overlap along their length), or the side of the space:
+// the free offsets { before, after } around it, so its own offset may range between before + MIN_CELL and after - WALL - MIN_CELL
+function ellFacing(items, item, w, h) {
+  const lo = item.axis === 'v' ? item.x : item.y, tot = item.axis === 'v' ? w : h;
+  let before = 0, after = tot;
+  for (const q of items) {
+    if (q === item || q.axis !== item.axis) continue;
+    const along = item.axis === 'v' ? Math.min(item.y + item.h, q.y + q.h) - Math.max(item.y, q.y) : Math.min(item.x + item.w, q.x + q.w) - Math.max(item.x, q.x);
+    if (along <= EPS) continue;
+    const qo = q.axis === 'v' ? q.x : q.y;
+    if (qo + WALL <= lo + EPS) before = Math.max(before, qo + WALL); else if (qo >= lo + WALL - EPS) after = Math.min(after, qo);
+  }
+  return { before, after, lo, tot, range: [before + MIN_CELL, after - WALL - MIN_CELL] };
+}
+// Move to the new position if it is allowed, otherwise as far towards it as is
+function settle(set, valid) {
+  set(1);
+  if (valid()) return;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 12; k++) { const mid = (lo + hi) / 2; set(mid); if (valid()) lo = mid; else hi = mid; }
+  set(lo);
 }
 function startEllDrag(el, e) {
   const n = findNode(state.root, +el.dataset.node);
   if (!n || !n.ell) return;
   const r = currentLayout().regions.get(n.id), left = n.ell.corner[1] === 'l', top = n.ell.corner[0] === 't';
-  const along = {};                                           // dividers exactly in line with the L's own go with it
-  const range = (kind, tot, isLeadingSide) => {            // the pocket's width (or length) may range as far as the other dividers allow
-    const all = ellBands(n, r.w, r.h, kind), arm = all.find(b => b.chord === -1);
-    along[kind] = all.filter(b => b.chord >= 0 && Math.abs(b.off - arm.off) < EPS).map(b => b.chord);
-    const bands = all.filter(b => b.chord === -1 || !along[kind].includes(b.chord)), [lo, hi] = bandRange(bands, bands.findIndex(b => b.chord === -1), tot);
-    return isLeadingSide ? [lo, hi] : [tot - WALL - hi, tot - WALL - lo];
-  };
-  ellDrag = { id: n.id, mode: el.dataset.ell, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, pw0: n.ell.fx * (r.w - WALL), ph0: n.ell.fy * (r.h - WALL), rx: range('x', r.w, left), ry: range('y', r.h, top), along, moved: false };
+  const items = ellItems(n, r.w, r.h), fx = ellFacing(items, items[0], r.w, r.h), fy = ellFacing(items, items[1], r.w, r.h);
+  const along = { x: [], y: [] };                             // dividers exactly in line with the L's own go with it
+  items.forEach(c => { if (c.i >= 0 && Math.abs((c.axis === 'v' ? c.x : c.y) - (c.axis === 'v' ? fx.lo : fy.lo)) < EPS) along[c.kind].push(c.i); });
+  const lead = (f, tot, leading) => (leading ? f.range : [tot - WALL - f.range[1], tot - WALL - f.range[0]]);      // the range of the pocket's width (or length)
+  ellDrag = { id: n.id, mode: el.dataset.ell, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, pw0: n.ell.fx * (r.w - WALL), ph0: n.ell.fy * (r.h - WALL), rx: lead(fx, r.w, left), ry: lead(fy, r.h, top), along, moved: false };
   canvas.setPointerCapture(e.pointerId);
   e.preventDefault();
 }
@@ -1235,15 +1343,18 @@ function moveEll(e) {
   const { s } = canvas._view, left = n.ell.corner[1] === 'l', top = n.ell.corner[0] === 't';
   const dx = (e.clientX - d.x0) / s, dy = (e.clientY - d.y0) / s, snap = v => Math.round(v / SNAP) * SNAP;
   const fit = (v, [lo, hi], tot) => clamp(snap(v), lo, Math.max(lo, hi)) / (tot - WALL);
-  const prev = { fx: n.ell.fx, fy: n.ell.fy };
-  if (d.mode !== 'h') n.ell.fx = fit(d.pw0 + (left ? dx : -dx), d.rx, d.w);
-  if (d.mode !== 'v') n.ell.fy = fit(d.ph0 + (top ? dy : -dy), d.ry, d.h);
-  const armOff = { x: left ? n.ell.fx * (d.w - WALL) : d.w - n.ell.fx * (d.w - WALL) - WALL, y: top ? n.ell.fy * (d.h - WALL) : d.h - n.ell.fy * (d.h - WALL) - WALL };
-  for (const i of d.along.x) n.ell.cx[i] = armOff.x / (d.w - WALL);
-  for (const i of d.along.y) n.ell.cy[i] = armOff.y / (d.h - WALL);
+  const from = { fx: n.ell.fx, fy: n.ell.fy };
+  const to = { fx: d.mode !== 'h' ? fit(d.pw0 + (left ? dx : -dx), d.rx, d.w) : from.fx, fy: d.mode !== 'v' ? fit(d.ph0 + (top ? dy : -dy), d.ry, d.h) : from.fy };
+  const set = t => {
+    n.ell.fx = from.fx + (to.fx - from.fx) * t; n.ell.fy = from.fy + (to.fy - from.fy) * t;
+    const armOff = { x: left ? n.ell.fx * (d.w - WALL) : d.w - n.ell.fx * (d.w - WALL) - WALL, y: top ? n.ell.fy * (d.h - WALL) : d.h - n.ell.fy * (d.h - WALL) - WALL };
+    for (const i of d.along.x) n.ell.cx[i] = armOff.x / (d.w - WALL);
+    for (const i of d.along.y) n.ell.cy[i] = armOff.y / (d.h - WALL);
+  };
+  settle(set, () => ellValid(n, d.w, d.h));
   if (state.eq.length) {                                  // linked sizes must still hold: otherwise stop where it last worked
     const res = solveLinks(state.eq);
-    if (res.ok) applySolution(res.prob, res.x); else Object.assign(n.ell, prev);
+    if (res.ok) applySolution(res.prob, res.x); else { n.ell.fx = from.fx; n.ell.fy = from.fy; set(0); }
   }
   renderDrawer(canvas, { interactive: true });
 }
@@ -1257,18 +1368,16 @@ function endEll(e) {
 }
 // A divider across an L-shaped space
 function chordInfo(n, kind, i, w, h) {
-  const bands = ellBands(n, w, h, kind), at = bands.findIndex(b => b.chord === i), tot = kind === 'x' ? w : h;
-  const before = at ? bands[at - 1].off + WALL : 0, after = at < bands.length - 1 ? bands[at + 1].off : tot;
-  return { bands, at, tot, size: [bands[at].off - before, after - bands[at].off - WALL] };
+  const items = ellItems(n, w, h), item = items.find(c => c.kind === kind && c.i === i), f = ellFacing(items, item, w, h);
+  return { items, item, f, tot: f.tot, off: f.lo, size: [f.lo - f.before, f.after - f.lo - WALL] };
 }
 function startChordDrag(el, e) {
   const n = findNode(state.root, +el.dataset.node);
   if (!n || !n.ell) return;
   const kind = el.dataset.chord, i = +el.dataset.i, r = currentLayout().regions.get(n.id);
-  const ci = chordInfo(n, kind, i, r.w, r.h), arm = ci.bands.find(b => b.chord === -1);
-  if (Math.abs(ci.bands[ci.at].off - arm.off) < EPS) { startEllDrag({ dataset: { node: n.id, ell: kind === 'x' ? 'v' : 'h' } }, e); return; }      // in line with the L's own divider: they move together
-  const [lo, hi] = bandRange(ci.bands, ci.at, ci.tot);
-  chordDrag = { id: n.id, kind, i, x0: e.clientX, y0: e.clientY, before: snapshot(), tot: ci.tot, off0: ci.bands[ci.at].off, lo, hi, moved: false,
+  const ci = chordInfo(n, kind, i, r.w, r.h), armOff = kind === 'x' ? ci.items[0].x : ci.items[1].y;
+  if (Math.abs(ci.off - armOff) < EPS) { startEllDrag({ dataset: { node: n.id, ell: kind === 'x' ? 'v' : 'h' } }, e); return; }      // in line with the L's own divider: they move together
+  chordDrag = { id: n.id, kind, i, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, tot: ci.tot, off0: ci.off, lo: ci.f.range[0], hi: ci.f.range[1], moved: false,
     info: { chord: { kind, i }, nodeId: n.id, axis: kind === 'x' ? 'v' : 'h', piece: null, size: ci.size } };
   canvas.setPointerCapture(e.pointerId);
   e.preventDefault();
@@ -1277,9 +1386,9 @@ function moveChord(e) {
   const d = chordDrag, n = findNode(state.root, d.id);
   if (!n || !d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
   d.moved = true;
-  const { s } = canvas._view, delta = (d.kind === 'x' ? e.clientX - d.x0 : e.clientY - d.y0) / s;
-  const off = clamp(Math.round((d.off0 + delta) / SNAP) * SNAP, d.lo, Math.max(d.lo, d.hi));
-  n.ell[d.kind === 'x' ? 'cx' : 'cy'][d.i] = off / (d.tot - WALL);
+  const { s } = canvas._view, delta = (d.kind === 'x' ? e.clientX - d.x0 : e.clientY - d.y0) / s, key = d.kind === 'x' ? 'cx' : 'cy';
+  const from = n.ell[key][d.i], to = clamp(Math.round((d.off0 + delta) / SNAP) * SNAP, d.lo, Math.max(d.lo, d.hi)) / (d.tot - WALL);
+  settle(t => { n.ell[key][d.i] = from + (to - from) * t; }, () => ellValid(n, d.w, d.h));
   renderDrawer(canvas, { interactive: true });
 }
 function endChord(e) {
@@ -1293,7 +1402,7 @@ function endChord(e) {
 function deleteChord(info) {
   const n = findNode(state.root, info.nodeId);
   if (!n || !n.ell) return;
-  n.ell[info.chord.kind === 'x' ? 'cx' : 'cy'].splice(info.chord.i, 1);
+  ellRemoveChord(n.ell, info.chord.kind, info.chord.i);
   closePopover();
   commit();
 }
@@ -1463,17 +1572,15 @@ canvas.addEventListener('pointerleave', () => { if (subHover) { subHover = null;
 
 // Dividers that split a space inside an L-shaped space evenly: the new fractions for the L's dividers, or null if they will not fit
 function faceSplit(cell, sp, rect) {
-  const n = cell.ell, r = currentLayout().regions.get(n.id), e = { ...n.ell, cx: [...ellFractions(n.ell, 'cx')], cy: [...ellFractions(n.ell, 'cy')] };
-  const add = (key, lo, size, tot) => {                                // one divider, through the middle of the chosen rectangle
-    const kind = key === 'cx' ? 'x' : 'y';
+  const n = cell.ell, r = currentLayout().regions.get(n.id), e = ellClone(n.ell);
+  const add = (kind, lo, size, tot, anchor) => {                       // one divider, through the middle of the chosen rectangle
     const arm = ellBands({ ell: e }, r.w, r.h, kind).find(b => b.chord === -1).off;
     let off = lo + size / 2 - WALL / 2;
     if (Math.abs(off - arm) < 0.25) off = arm;                         // close to the L's own divider: carry it on instead
-    e[key].push(off / (tot - WALL));
-    e[key].sort((p, q) => p - q);
+    ellAddChord(e, kind, off / (tot - WALL), anchor);
   };
-  if (sp.nc > 1) add('cx', rect.x - r.x, rect.w, r.w);
-  if (sp.nr > 1) add('cy', rect.y - r.y, rect.h, r.h);
+  if (sp.nc > 1) add('x', rect.x - r.x, rect.w, r.w, (rect.y + rect.h / 2 - r.y) / r.h);
+  if (sp.nr > 1) add('y', rect.y - r.y, rect.h, r.h, (rect.x + rect.w / 2 - r.x) / r.w);
   return ellValid({ ell: e }, r.w, r.h) ? e : null;
 }
 function applySplit(sp) {
