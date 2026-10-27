@@ -1414,21 +1414,6 @@ function openEllPopover(id, px, py) {
   ellNode = n;
   const r = currentLayout().regions.get(n.id);
   $('#ellpop-sizes').textContent = `Pocket ${fmt2(n.ell.fx * (r.w - WALL))}″ × ${fmt2(n.ell.fy * (r.h - WALL))}″`;
-  const pick = $('#ellpop-corners');
-  pick.innerHTML = '';
-  for (const [c, name] of CORNERS) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.title = `Put the pocket in the ${name} corner`; b.setAttribute('aria-label', `Pocket in the ${name} corner`);
-    if (c === n.ell.corner) b.className = 'on';
-    b.innerHTML = `<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><rect class="pocket" x="${c[1] === 'l' ? 2 : 17}" y="${c[0] === 't' ? 2 : 12}" width="15" height="10"/></svg>`;
-    b.addEventListener('click', () => {
-      const was = n.ell.corner;
-      n.ell.corner = c;
-      if (!ellValid(n, r.w, r.h)) { n.ell.corner = was; closePopover(); showNote('The dividers in the L-shaped space are in the way there. Move or delete them first.', 'warn', 6000); return; }
-      closePopover(); commit();
-    });
-    pick.appendChild(b);
-  }
   placePopover($('#ellpop'), px, py);
 }
 function deleteEll(n) {

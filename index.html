@@ -87,7 +87,7 @@
         <li>To make two sizes equal, select a number inside one space, then a number inside another. They are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces.</li>
         <li>Divide a space again to build grids and nested layouts.</li>
-        <li>Choose <b>L-shape</b>, then pick the corner, to fence it off with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select the L to change which corner the pocket is in, or to delete it. The L-shaped space is treated as 3 rectangles (its two ends and the elbow): move the pointer over it to see which one is under it, click, and choose 2 columns or 2 rows to add a divider through the middle of that rectangle. It runs on until it meets a wall, the L, or a divider you added earlier (the first divider runs on; a later one stops against it). The pocket can be divided like any space.</li>
+        <li>Choose <b>L-shape</b>, then pick the corner, to fence it off with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select the L to delete it (to change its corner, delete it and add a new one). The L-shaped space is treated as 3 rectangles (its two ends and the elbow): move the pointer over it to see which one is under it, click, and choose 2 columns or 2 rows to add a divider through the middle of that rectangle. It runs on until it meets a wall, the L, or a divider you added earlier (the first divider runs on; a later one stops against it). The pocket can be divided like any space.</li>
         <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
         <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
       </ul>
@@ -142,10 +142,8 @@
         <div class="pop-title">L-shaped divider</div>
         <div class="divpop-body">
           <p class="divpop-sizes" id="ellpop-sizes"></p>
-          <p class="note small">Pocket corner</p>
-          <div class="corner-pick" id="ellpop-corners"></div>
           <button type="button" class="btn danger" id="ellpop-delete">Delete the L</button>
-          <p class="note small">Drag either part of the L to move it, or its corner to move both. Deleting makes the space one again, and removes any dividers inside the pocket.</p>
+          <p class="note small">Drag either part of the L to move it, or its corner to move both. To put the pocket in a different corner, delete the L and add a new one. Deleting makes the space one again, and removes any dividers inside the pocket.</p>
         </div>
         <button type="button" class="pop-cancel" id="ellpop-close">Close</button>
       </div>
