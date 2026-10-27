@@ -87,6 +87,7 @@
         <li>To make two sizes equal, select a number inside one space, then a number inside another. They are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces.</li>
         <li>Divide a space again to build grids and nested layouts.</li>
+        <li>Choose <b>L-shape</b> to fence off a corner with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select the L to change which corner the pocket is in, or to delete it. The pocket can be divided further; the rest of the space stays one L-shaped compartment.</li>
         <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
         <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
       </ul>
@@ -136,6 +137,17 @@
           <p class="note small" id="divpop-delnote"></p>
         </div>
         <button type="button" class="pop-cancel" id="divpop-close">Close</button>
+      </div>
+      <div class="popover" id="ellpop" hidden role="dialog" aria-label="L-shaped divider options">
+        <div class="pop-title">L-shaped divider</div>
+        <div class="divpop-body">
+          <p class="divpop-sizes" id="ellpop-sizes"></p>
+          <p class="note small">Pocket corner</p>
+          <div class="corner-pick" id="ellpop-corners"></div>
+          <button type="button" class="btn danger" id="ellpop-delete">Delete the L</button>
+          <p class="note small">Drag either part of the L to move it, or its corner to move both. Deleting makes the space one again, and removes any dividers inside the pocket.</p>
+        </div>
+        <button type="button" class="pop-cancel" id="ellpop-close">Close</button>
       </div>
       <div class="popover" id="numpop" hidden role="dialog" aria-label="Linked number">
         <div class="pop-title">Linked number</div>

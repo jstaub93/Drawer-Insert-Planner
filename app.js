@@ -103,10 +103,10 @@ const sameFr = (x, y) => x.length === y.length && x.every((v, i) => Math.abs(v -
 // A split whose every child is split along the other axis into identical parts is a grid in
 // disguise: its full-span divider can be rebuilt the other way round so each piece moves alone.
 function transposable(n, axis) {
-  if (!n.kids) return false;
+  if (!n.kids || n.ell) return false;
   const k0 = n.kids[0];
-  if (axis === 'v') return n.rowF.length === 1 && n.colF.length > 1 && n.kids.every(k => k.kids && k.colF.length === 1 && k.rowF.length > 1 && sameFr(k.rowF, k0.rowF));
-  return n.colF.length === 1 && n.rowF.length > 1 && n.kids.every(k => k.kids && k.rowF.length === 1 && k.colF.length > 1 && sameFr(k.colF, k0.colF));
+  if (axis === 'v') return n.rowF.length === 1 && n.colF.length > 1 && n.kids.every(k => k.colF && k.colF.length === 1 && k.rowF.length > 1 && sameFr(k.rowF, k0.rowF));
+  return n.colF.length === 1 && n.rowF.length > 1 && n.kids.every(k => k.rowF && k.rowF.length === 1 && k.colF.length > 1 && sameFr(k.colF, k0.colF));
 }
 
 function transposeAt(n, axis) {
@@ -121,11 +121,41 @@ function transposeAt(n, axis) {
   }
 }
 
+/* An L-shaped divider inside a space: a vertical and a horizontal divider that meet at a corner, each running from the
+ * side of the space to that corner, so they fence off a rectangular pocket in one corner and leave an L-shaped space.
+ * n.ell = { corner: 'tl' | 'tr' | 'bl' | 'br', fx, fy } (where the pocket is, and its width and length as fractions of
+ * the space less one sheet); n.kids = [the pocket, the L-shaped space]. The vertical divider takes the corner square and
+ * the horizontal one butts against its face. */
+function ellGeom(e, x, y, w, h) {
+  const pw = e.fx * (w - WALL), ph = e.fy * (h - WALL), left = e.corner[1] === 'l', top = e.corner[0] === 't';
+  const vx = left ? x + pw : x + w - pw - WALL, hy = top ? y + ph : y + h - ph - WALL;
+  const vy0 = top ? y : hy, vy1 = top ? hy + WALL : y + h;
+  const hx0 = left ? x : vx + WALL, hx1 = left ? vx : x + w;
+  const cw = pw + WALL, ch = ph + WALL;
+  const cut = { x: left ? x : x + w - cw, y: top ? y : y + h - ch, w: cw, h: ch };       // the pocket and its two dividers
+  const x1 = x + w, y1 = y + h, cx1 = cut.x + cut.w, cy1 = cut.y + cut.h;
+  const poly = { tl: [[cx1, y], [x1, y], [x1, y1], [x, y1], [x, cy1], [cx1, cy1]], tr: [[x, y], [cut.x, y], [cut.x, cy1], [x1, cy1], [x1, y1], [x, y1]],
+    bl: [[x, y], [x1, y], [x1, y1], [cx1, y1], [cx1, cut.y], [x, cut.y]], br: [[x, y], [x1, y], [x1, cut.y], [cut.x, cut.y], [cut.x, y1], [x, y1]] }[e.corner];
+  // the two arms of the L-shaped space: a strip along the side of the pocket and a strip along its far end
+  const legs = [left ? { x: cx1, y, w: x1 - cx1, h } : { x, y, w: cut.x - x, h }, top ? { x, y: cy1, w, h: y1 - cy1 } : { x, y, w, h: cut.y - y }];
+  return { pw, ph, left, top, cut, poly, legs, corner: { x: vx + WALL / 2, y: hy + WALL / 2 },
+    pocket: { x: left ? x : x + w - pw, y: top ? y : y + h - ph, w: pw, h: ph },
+    v: { x: vx, y: vy0, w: WALL, h: vy1 - vy0 }, hz: { x: hx0, y: hy, w: hx1 - hx0, h: WALL } };
+}
+
 function layoutTree(root, W, L) {
   const cells = [], divs = [], regions = new Map();    // regions: every node's rectangle, for the constraint solver
   (function walk(n, x, y, w, h) {
     regions.set(n.id, { w, h, x, y });
     if (!n.kids) { cells.push({ n, x, y, w, h }); return; }
+    if (n.ell) {
+      const g = ellGeom(n.ell, x, y, w, h);
+      divs.push({ n, ell: 'v', axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h }, { n, ell: 'h', axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h });
+      walk(n.kids[0], g.pocket.x, g.pocket.y, g.pocket.w, g.pocket.h);
+      regions.set(n.kids[1].id, { w, h, x, y });
+      cells.push({ n: n.kids[1], x, y, w, h, cut: g.cut, poly: g.poly, legs: g.legs, ell: n, geom: g });
+      return;
+    }
     const nc = n.colF.length, nr = n.rowF.length;
     const aw = w - (nc - 1) * WALL, ah = h - (nr - 1) * WALL;
     const cx = [], cw = [], ry = [], rh = [];
@@ -309,6 +339,11 @@ function buildProblem(root, regions) {
   ];
   (function walk(n) {
     if (!n.kids) return;
+    if (n.ell) {                                          // the L-shaped space fills the whole region; the pocket's size is free
+      rows.push({ t: [[Wv(n.kids[1].id), 1], [Wv(n.id), -1]], b: 0 }, { t: [[Lv(n.kids[1].id), 1], [Lv(n.id), -1]], b: 0 });
+      n.kids.forEach(walk);
+      return;
+    }
     const nc = n.colF.length, nr = n.rowF.length, kid = (r, c) => n.kids[r * nc + c];
     for (let c = 0; c < nc; c++) for (let r = 1; r < nr; r++) rows.push({ t: [[Wv(kid(r, c).id), 1], [Wv(kid(0, c).id), -1]], b: 0 });
     for (let r = 0; r < nr; r++) for (let c = 1; c < nc; c++) rows.push({ t: [[Lv(kid(r, c).id), 1], [Lv(kid(r, 0).id), -1]], b: 0 });
@@ -373,6 +408,12 @@ function linkRows(prob, eq) {
 function applySolution(prob, x) {
   (function walk(n) {
     if (!n.kids) return;
+    if (n.ell) {
+      n.ell.fx = clamp(x[prob.Wv(n.kids[0].id)] / (x[prob.Wv(n.id)] - WALL), 0.001, 0.999);
+      n.ell.fy = clamp(x[prob.Lv(n.kids[0].id)] / (x[prob.Lv(n.id)] - WALL), 0.001, 0.999);
+      n.kids.forEach(walk);
+      return;
+    }
     const nc = n.colF.length, nr = n.rowF.length, kid = (r, c) => n.kids[r * nc + c];
     const cols = Array.from({ length: nc }, (_, c) => x[prob.Wv(kid(0, c).id)]);
     const rowsz = Array.from({ length: nr }, (_, r) => x[prob.Lv(kid(r, 0).id)]);
@@ -484,7 +525,8 @@ function renderDrawer(svg, { interactive }) {
   // sheet stock: walls and dividers show as the gaps between the open spaces
   out.push(`<rect class="wall" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
   for (const c of cells) {
-    out.push(`<rect class="cell" data-cell="${c.n.id}" x="${ox + c.x * s}" y="${oy + c.y * s}" width="${c.w * s}" height="${c.h * s}"/>`);
+    if (c.poly) out.push(`<path class="cell" data-cell="${c.n.id}" d="M${c.poly.map(([qx, qy]) => `${ox + qx * s} ${oy + qy * s}`).join('L')}Z"/>`);
+    else out.push(`<rect class="cell" data-cell="${c.n.id}" x="${ox + c.x * s}" y="${oy + c.y * s}" width="${c.w * s}" height="${c.h * s}"/>`);
   }
   out.push(`<rect class="outline" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
 
@@ -503,6 +545,13 @@ function renderDrawer(svg, { interactive }) {
       + `<text class="cell-label" x="${x0}" y="${y}" font-size="${size}" dominant-baseline="central">${text}</text>`;
   };
   for (const c of cells) {
+    if (c.cut) {                                          // an L-shaped space: just a name, in its larger arm
+      const lg = c.legs.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
+      const lx0 = Math.max(ox + lg.x * s, 0), lx1 = Math.min(ox + (lg.x + lg.w) * s, bw), ly0 = Math.max(oy + lg.y * s, 0), ly1 = Math.min(oy + (lg.y + lg.h) * s, bh);
+      const fs = Math.min(14, (lx1 - lx0 - 6) / 5.2, (ly1 - ly0 - 6) / 1.4);
+      if (fs >= 6) out.push(`<text class="cell-label" x="${(lx0 + lx1) / 2}" y="${(ly0 + ly1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">L-shaped</text>`);
+      continue;
+    }
     // zoomed in, a space is mostly off screen: put its label in the part that is showing
     const px0 = Math.max(ox + c.x * s, 0), px1 = Math.min(ox + (c.x + c.w) * s, bw), py0 = Math.max(oy + c.y * s, 0), py1 = Math.min(oy + (c.y + c.h) * s, bh);
     if (px1 - px0 < 4 || py1 - py0 < 4) continue;
@@ -539,6 +588,17 @@ function renderDrawer(svg, { interactive }) {
         const active = drag && drag.key === key ? ' active' : '';
         out.push(`<rect class="hit${active}" data-hit="1" data-key="${key}" data-node="${d.n.id}" data-axis="${d.axis}" data-i="${d.i}"${piece} x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move. Select to see its sizes or delete it.</title></rect>`);
       });
+    }
+    // L-shaped dividers: grab either arm to move it, or the corner to move both
+    for (const d of divs) {
+      if (!d.ell) continue;
+      const thick = Math.max(WALL * s, 14), k = d.ell;
+      const [x, y, w, h] = k === 'v' ? [ox + (d.x + WALL / 2) * s - thick / 2, oy + d.y * s, thick, d.h * s] : [ox + d.x * s, oy + (d.y + WALL / 2) * s - thick / 2, d.w * s, thick];
+      out.push(`<rect class="hit ell-hit" data-ell="${k}" data-axis="${k}" data-node="${d.n.id}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move this part of the L. Select it for options.</title></rect>`);
+    }
+    for (const c of cells) {
+      if (!c.geom) continue;
+      out.push(`<circle class="ell-corner" data-ell="c" data-node="${c.ell.id}" cx="${ox + c.geom.corner.x * s}" cy="${oy + c.geom.corner.y * s}" r="9"><title>Drag to move the corner of the L. Select it for options.</title></circle>`);
     }
     // front edge: a bracket under the drawer with its name in the middle
     const fy = oy + dl + 20, fx = ox + dw / 2;
@@ -577,6 +637,7 @@ canvas.addEventListener('pointerdown', e => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {                      // a second finger: pinch to zoom, and drag to move, instead of anything else
     if (drag) { loadSnapshot(drag.before); drag = null; refresh(); }
+    if (ellDrag) { loadSnapshot(ellDrag.before); ellDrag = null; refresh(); }
     numPress = null; press = null; pan = null;
     const [a, b] = [...pointers.values()], vw = canvas._view, r = canvas.getBoundingClientRect();
     const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
@@ -585,6 +646,8 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (pointers.size > 2) return;
+  const ellEl = e.target.closest('[data-ell]');
+  if (ellEl) { closePopover(); startEllDrag(ellEl, e); return; }
   const num = e.target.closest('[data-num]');
   if (num) {
     closePopover();
@@ -637,6 +700,7 @@ canvas.addEventListener('pointerdown', e => {
 // Zoomed in, dragging a space (rather than clicking it) moves the view too. Two fingers pinch.
 canvas.addEventListener('pointermove', e => {
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ellDrag) { moveEll(e); return; }
   if (pinch) {
     if (pointers.size < 2) return;
     const [a, b] = [...pointers.values()], r = canvas.getBoundingClientRect();
@@ -734,6 +798,7 @@ function endDrag(e) {
   }
 }
 canvas.addEventListener('pointerup', e => {
+  if (ellDrag) { endEll(e); return; }
   if (numPress) {
     const np = numPress; numPress = null;
     if (Math.hypot(e.clientX - np.x, e.clientY - np.y) < 6) onNumberClick(np.key, e.clientX, e.clientY);
@@ -743,7 +808,7 @@ canvas.addEventListener('pointerup', e => {
   if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) openPopover(press.id, e.clientX, e.clientY);
   press = null;
 });
-canvas.addEventListener('pointercancel', () => { numPress = null; if (drag) { endDrag(); } press = null; });
+canvas.addEventListener('pointercancel', () => { numPress = null; if (ellDrag) { loadSnapshot(ellDrag.before); ellDrag = null; refresh(); } if (drag) { endDrag(); } press = null; });
 
 /* ---------- notes shown over the plan ---------- */
 let transientNote = null, noteTimer = null;
@@ -785,7 +850,7 @@ function onNumberClick(key, px, py) {
 
 let numberKey = null;
 function openNumberPopover(key, px, py) {
-  $('#popover').hidden = true; $('#divpop').hidden = true; popoverCell = null; dividerInfo = null;
+  $('#ellpop').hidden = true; $('#popover').hidden = true; $('#divpop').hidden = true; popoverCell = null; dividerInfo = null;
   numberKey = key;
   const { groups, groupOf } = eqGroups();
   const others = groups[groupOf.get(key)].length - 1;
@@ -886,6 +951,30 @@ function joinNarrow(lines) {
   return lines;
 }
 
+// A region whose dividers are an L (and possibly dividers inside its pocket): the L-shaped node, or null.
+function ellFromLines(R, lines) {
+  for (const V of lines.filter(l => l.axis === 'v')) for (const H of lines.filter(l => l.axis === 'h')) {
+    const top = Math.abs(V.s - R.y) < EPS, bottom = Math.abs(V.e - (R.y + R.h)) < EPS;
+    const left = Math.abs(H.s - R.x) < EPS, right = Math.abs(H.e - (R.x + R.w)) < EPS;
+    if (top === bottom || left === right) continue;
+    const meetsX = left ? Math.abs(H.e - V.pos) < EPS : Math.abs(H.s - (V.pos + WALL)) < EPS;
+    const meetsY = top ? Math.abs(V.e - (H.pos + WALL)) < EPS : Math.abs(V.s - H.pos) < EPS;
+    if (!meetsX || !meetsY) continue;
+    const pw = left ? V.pos - R.x : R.x + R.w - (V.pos + WALL), ph = top ? H.pos - R.y : R.y + R.h - (H.pos + WALL);
+    if (pw < EPS || ph < EPS || pw > R.w - WALL - EPS || ph > R.h - WALL - EPS) continue;
+    const pocket = { x: left ? R.x : R.x + R.w - pw, y: top ? R.y : R.y + R.h - ph, w: pw, h: ph };
+    const rest = lines.filter(l => l !== V && l !== H);
+    const inside = l => (l.axis === 'v'
+      ? l.pos >= pocket.x - EPS && l.pos + WALL <= pocket.x + pocket.w + EPS && l.s >= pocket.y - EPS && l.e <= pocket.y + pocket.h + EPS
+      : l.pos >= pocket.y - EPS && l.pos + WALL <= pocket.y + pocket.h + EPS && l.s >= pocket.x - EPS && l.e <= pocket.x + pocket.w + EPS);
+    if (!rest.every(inside)) continue;
+    const kid = treeFromLines(pocket, rest);
+    if (!kid) continue;
+    return { _r: R, ell: { corner: (top ? 't' : 'b') + (left ? 'l' : 'r'), fx: pw / (R.w - WALL), fy: ph / (R.h - WALL) }, kids: [kid, { _r: R }] };
+  }
+  return null;
+}
+
 // Rebuild the grid tree for rectangle R from divider lines that all lie inside it; null if they do not form a nested grid.
 function treeFromLines(R, segs) {
   const lines = mergeLines(segs);
@@ -894,7 +983,7 @@ function treeFromLines(R, segs) {
   const full = lines.filter(l => { const [a, b] = spanOf(l); return Math.abs(l.s - a) < EPS && Math.abs(l.e - b) < EPS; });
   const vs = full.filter(l => l.axis === 'v').map(l => l.pos).sort((a, b) => a - b);
   const hs = full.filter(l => l.axis === 'h').map(l => l.pos).sort((a, b) => a - b);
-  if (!full.length) return null;
+  if (!full.length) return ellFromLines(R, lines);
   const cuts = (lo, hi, at) => { const out = []; let p = lo; for (const q of at) { out.push([p, q]); p = q + WALL; } out.push([p, hi]); return out; };
   const cols = cuts(R.x, R.x + R.w, vs), rows = cuts(R.y, R.y + R.h, hs);
   if ([...cols, ...rows].some(([a, b]) => b - a < EPS)) return null;
@@ -962,7 +1051,7 @@ function applyExtendedDelete(info) {
     const m = oldNodes.find(o => !used.has(o.id) && !!o.kids === !!t.kids && near(regions.get(o.id), t._r));
     if (m) used.add(m.id);
     const node = { id: m ? m.id : nextId++ };
-    if (t.kids) { node.colF = t.colF; node.rowF = t.rowF; node.kids = t.kids.map(make); }
+    if (t.kids) { if (t.ell) node.ell = t.ell; else { node.colF = t.colF; node.rowF = t.rowF; } node.kids = t.kids.map(make); }
     return node;
   };
   const root = make(tree);
@@ -1017,7 +1106,7 @@ function placePopover(pop, px, py) {
 }
 
 function openDividerPopover(info, px, py) {
-  $('#popover').hidden = true; $('#numpop').hidden = true; popoverCell = null; numberKey = null;
+  $('#ellpop').hidden = true; $('#popover').hidden = true; $('#numpop').hidden = true; popoverCell = null; numberKey = null;
   dividerInfo = info;
   const wide = info.axis === 'v';
   const [s1, s2] = info.size;
@@ -1029,6 +1118,71 @@ function openDividerPopover(info, px, py) {
 }
 $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDivider(dividerInfo); });
 $('#divpop-close').addEventListener('click', () => closePopover());
+
+/* ---------- L-shaped dividers ---------- */
+let ellDrag = null, ellNode = null;
+function startEllDrag(el, e) {
+  const n = findNode(state.root, +el.dataset.node);
+  if (!n || !n.ell) return;
+  const r = currentLayout().regions.get(n.id);
+  ellDrag = { id: n.id, mode: el.dataset.ell, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, pw0: n.ell.fx * (r.w - WALL), ph0: n.ell.fy * (r.h - WALL), moved: false };
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+function moveEll(e) {
+  const d = ellDrag, n = findNode(state.root, d.id);
+  if (!n || !d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
+  d.moved = true;
+  const { s } = canvas._view, left = n.ell.corner[1] === 'l', top = n.ell.corner[0] === 't';
+  const dx = (e.clientX - d.x0) / s, dy = (e.clientY - d.y0) / s, snap = v => Math.round(v / SNAP) * SNAP;
+  const fit = (v, tot) => clamp(snap(v), MIN_CELL, Math.max(MIN_CELL, tot - WALL - MIN_CELL)) / (tot - WALL);
+  const prev = { fx: n.ell.fx, fy: n.ell.fy };
+  if (d.mode !== 'h') n.ell.fx = fit(d.pw0 + (left ? dx : -dx), d.w);
+  if (d.mode !== 'v') n.ell.fy = fit(d.ph0 + (top ? dy : -dy), d.h);
+  if (state.eq.length) {                                  // linked sizes must still hold: otherwise stop where it last worked
+    const res = solveLinks(state.eq);
+    if (res.ok) applySolution(res.prob, res.x); else Object.assign(n.ell, prev);
+  }
+  renderDrawer(canvas, { interactive: true });
+}
+function endEll(e) {
+  const d = ellDrag;
+  ellDrag = null;
+  if (!d) return;
+  if (snapshot() !== d.before) { commit(); return; }
+  if (d.moved) { loadSnapshot(d.before); refresh(); return; }
+  openEllPopover(d.id, e.clientX, e.clientY);              // a click: its options
+}
+const CORNERS = [['tl', 'top left'], ['tr', 'top right'], ['bl', 'bottom left'], ['br', 'bottom right']];
+function openEllPopover(id, px, py) {
+  const n = findNode(state.root, id);
+  if (!n || !n.ell) return;
+  closePopover();
+  ellNode = n;
+  const r = currentLayout().regions.get(n.id);
+  $('#ellpop-sizes').textContent = `Pocket ${fmt2(n.ell.fx * (r.w - WALL))}″ × ${fmt2(n.ell.fy * (r.h - WALL))}″`;
+  const pick = $('#ellpop-corners');
+  pick.innerHTML = '';
+  for (const [c, name] of CORNERS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.title = `Put the pocket in the ${name} corner`; b.setAttribute('aria-label', `Pocket in the ${name} corner`);
+    if (c === n.ell.corner) b.className = 'on';
+    b.innerHTML = `<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><rect class="pocket" x="${c[1] === 'l' ? 2 : 17}" y="${c[0] === 't' ? 2 : 12}" width="15" height="10"/></svg>`;
+    b.addEventListener('click', () => { n.ell.corner = c; closePopover(); commit(); });
+    pick.appendChild(b);
+  }
+  placePopover($('#ellpop'), px, py);
+}
+function deleteEll(n) {
+  const gone = [];
+  (function walk(k) { if (k !== n) gone.push(k.id); if (k.kids) k.kids.forEach(walk); })(n);
+  dropLinksFor(gone);
+  delete n.kids; delete n.ell;                             // one space again
+  closePopover();
+  commit();
+}
+$('#ellpop-delete').addEventListener('click', () => { if (ellNode) deleteEll(ellNode); });
+$('#ellpop-close').addEventListener('click', () => closePopover());
 
 /* ---------- split popover ---------- */
 const SPLITS = [
@@ -1042,7 +1196,8 @@ function openPopover(cellId, px, py) {
   const { cells } = currentLayout();
   const cell = cells.find(c => c.n.id === cellId);
   if (!cell) return;
-  $('#divpop').hidden = true; $('#numpop').hidden = true; dividerInfo = null; numberKey = null;
+  if (cell.cut) { openEllPopover(cell.ell.id, px, py); return; }       // the L-shaped space itself: the L's options
+  $('#ellpop').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; dividerInfo = null; numberKey = null;
   popoverCell = cell.n;
   const grid = $('#pop-grid');
   grid.innerHTML = '';
@@ -1057,6 +1212,14 @@ function openPopover(cellId, px, py) {
     b.addEventListener('click', () => applySplit(sp));
     grid.appendChild(b);
   }
+  const okL = (cell.w - WALL) / 2 >= MIN_CELL && (cell.h - WALL) / 2 >= MIN_CELL;
+  const bl = document.createElement('button');
+  bl.type = 'button'; bl.className = 'span2'; bl.disabled = !okL;
+  bl.title = okL ? 'Fence off a corner with an L-shaped divider' : 'This space is too small for an L-shape';
+  bl.setAttribute('aria-label', 'L-shape');
+  bl.innerHTML = '<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><path d="M2 12h13v-10"/></svg><span>L-shape</span>';
+  bl.addEventListener('click', () => applyEll());
+  grid.appendChild(bl);
   const pop = $('#popover');
   pop.hidden = false;
   const lab = $('#stage').getBoundingClientRect();
@@ -1064,8 +1227,19 @@ function openPopover(cellId, px, py) {
   pop.style.left = clamp(px - lab.left - w / 2, 8, lab.width - w - 8) + 'px';
   pop.style.top = clamp(py - lab.top + 12, 8, lab.height - h - 8) + 'px';
 }
-function closePopover() { $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
+function closePopover() { $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
 
+function applyEll() {                                  // an L-shaped divider: a pocket in the top left corner, to be moved as needed
+  const n = popoverCell;
+  if (!n) return;
+  const hadLinks = state.eq.some(({ a, b }) => numId(a) === n.id || numId(b) === n.id);
+  dropLinksFor([n.id]);
+  n.ell = { corner: 'tl', fx: 0.5, fy: 0.5 };
+  n.kids = [newLeaf(), newLeaf()];
+  closePopover();
+  commit();
+  if (hadLinks) showNote('Adding the L released this space\'s equal-size links.', 'info');
+}
 function applySplit(sp) {
   const n = popoverCell;
   if (!n) return;
@@ -1273,6 +1447,7 @@ function drawing() {
   // The drawing is a list of simple shapes in paper millimetres, drawn as SVG and as PDF.
   const scene = [];
   const R = (x, y, w, h, o = {}) => scene.push({ k: 'rect', x, y, w, h, fill: o.fill || null, stroke: o.stroke || null, sw: o.sw || 0, rx: o.rx || 0 });
+  const PG = (pts, o = {}) => scene.push({ k: 'poly', pts, fill: o.fill || null, stroke: o.stroke || null, sw: o.sw || 0 });
   const C = (x, y, r, o = {}) => scene.push({ k: 'circle', x, y, r, fill: o.fill || null, stroke: o.stroke || null, sw: o.sw || 0 });
   const Ln = (x1, y1, x2, y2, sw = 0.25) => scene.push({ k: 'line', x1, y1, x2, y2, stroke: '#111', sw });
   const T = (x, y, s, size, o = {}) => scene.push({ k: 'text', x, y, s, size, anchor: o.anchor || 'start', bold: !!o.bold, fill: o.fill || '#000', rot: o.rot || 0, ls: o.ls || 0 });
@@ -1284,8 +1459,17 @@ function drawing() {
   const callouts = [], labels = [];          // callouts: spaces too small for their letter, labelled in the margin instead
   sorted.forEach((c, i) => {
     const x = ox + c.x * k, y = oy + c.y * k, w = c.w * k, h = c.h * k;
-    R(x, y, w, h, { fill: '#fff', stroke: '#111', sw: 0.25 });
-    const cx = x + w / 2, cy = y + h / 2;
+    if (c.poly) PG(c.poly.map(([qx, qy]) => [ox + qx * k, oy + qy * k]), { fill: '#fff', stroke: '#111', sw: 0.25 });
+    else R(x, y, w, h, { fill: '#fff', stroke: '#111', sw: 0.25 });
+    let cx = x + w / 2, cy = y + h / 2;
+    if (c.cut) {                                                 // an L-shaped space: its letter goes in the larger of its two arms
+      const lg = c.legs.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
+      const lw = lg.w * k, lh = lg.h * k;
+      cx = ox + (lg.x + lg.w / 2) * k; cy = oy + (lg.y + lg.h / 2) * k;
+      if (lw >= 6 && lh >= 6) labels.push({ x: cx, y: cy + 1.5, s: labelFor(i), size: Math.min(4.6, lw * 0.6, lh * 0.6), bold: true });
+      else callouts.push({ letter: labelFor(i), cx, cy });
+      return;
+    }
     if (w >= 21 && h >= 12) {
       labels.push({ x: cx, y: cy - 0.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 4.2, s: `${fmt2(c.w)} × ${fmt2(c.h)}`, size: 2.8, fill: '#333' });
     } else if (w >= 6 && h >= 6) {
@@ -1362,6 +1546,7 @@ function sceneToSVG(scene, pageW, pageH) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const body = scene.map(o => {
     if (o.k === 'rect') return `<rect x="${n(o.x)}" y="${n(o.y)}" width="${n(o.w)}" height="${n(o.h)}"${o.rx ? ` rx="${o.rx}"` : ''} fill="${o.fill || 'none'}"${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw}"` : ''}/>`;
+    if (o.k === 'poly') return `<polygon points="${o.pts.map(q => `${n(q[0])},${n(q[1])}`).join(' ')}" fill="${o.fill || 'none'}"${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw}"` : ''}/>`;
     if (o.k === 'circle') return `<circle cx="${n(o.x)}" cy="${n(o.y)}" r="${n(o.r)}" fill="${o.fill || 'none'}"${o.stroke ? ` stroke="${o.stroke}" stroke-width="${o.sw}"` : ''}/>`;
     if (o.k === 'line') return `<line x1="${n(o.x1)}" y1="${n(o.y1)}" x2="${n(o.x2)}" y2="${n(o.y2)}" stroke="${o.stroke}" stroke-width="${o.sw}"/>`;
     const attrs = `x="${n(o.x)}" y="${n(o.y)}" font-size="${o.size}"${o.bold ? ' font-weight="700"' : ''}${o.anchor !== 'start' ? ` text-anchor="${o.anchor}"` : ''}${o.fill !== '#000' ? ` fill="${o.fill}"` : ''}${o.ls ? ` letter-spacing="${o.ls}"` : ''}${o.rot ? ` transform="rotate(${o.rot} ${n(o.x)} ${n(o.y)})"` : ''}`;
@@ -1397,6 +1582,7 @@ function designData() {
     })),
     compartments: sorted.map((c, i) => ({
       label: labelFor(i), x_in: r(c.x), y_in: r(c.y), width_in: r(c.w), length_in: r(c.h),
+      ...(c.cut ? { shape: 'L', note: 'L-shaped: width and length are the overall size; the pocket cut out of it is cutout_in', cutout_in: { x: r(c.cut.x), y: r(c.cut.y), width: r(c.cut.w), length: r(c.cut.h) } } : {}),
     })),
     price_estimate: {
       drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
@@ -1451,7 +1637,7 @@ function sheetData({ pdf = false } = {}) {
         ['Billable weight (the greater, rounded up)', `${pb.shipping.billable} lb`],
       ] },
       { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) }]),
-      { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.map(c => [c.label, inch(c.width_in), inch(c.length_in)]) },
+      { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.map(c => [c.shape === 'L' ? `${c.label} (L-shaped, overall)` : c.label, inch(c.width_in), inch(c.length_in)]) },
     ],
   };
 }
@@ -1517,6 +1703,11 @@ function pdfDrawScene(scene, pt, left, top) {
       if (o.fill) ops.push(`${pdfRGB(o.fill)} rg`);
       if (o.stroke) ops.push(`${pdfRGB(o.stroke)} RG ${pdfNum(o.sw * pt)} w`);
       ops.push(`${pdfNum(X(o.x))} ${pdfNum(Y(o.y + o.h))} ${pdfNum(o.w * pt)} ${pdfNum(o.h * pt)} re ${paint}`);
+    } else if (o.k === 'poly') {
+      const paint = o.fill && o.stroke ? 'B' : o.fill ? 'f' : o.stroke ? 'S' : 'n';
+      if (o.fill) ops.push(`${pdfRGB(o.fill)} rg`);
+      if (o.stroke) ops.push(`${pdfRGB(o.stroke)} RG ${pdfNum(o.sw * pt)} w`);
+      ops.push(o.pts.map((q, qi) => `${pdfNum(X(q[0]))} ${pdfNum(Y(q[1]))} ${qi ? 'l' : 'm'}`).join(' ') + ` h ${paint}`);
     } else if (o.k === 'circle') {
       const paint = o.fill && o.stroke ? 'B' : o.fill ? 'f' : o.stroke ? 'S' : 'n';
       const cx = X(o.x), cy = Y(o.y), r = o.r * pt, q = 0.5523 * r;
