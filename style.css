@@ -169,6 +169,7 @@ body.embed .zoom-ctl { right: auto; left: 10px; }
 .ell-corner { fill: var(--amber); stroke: var(--ink); stroke-width: 1.5; cursor: move; }
 .ell-corner:hover { fill: #fff3c9; }
 .pop-grid svg path { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.pop-grid svg rect.pocket { fill: var(--amber); fill-opacity: .55; stroke-width: 1.2; }
 
 /* drawing parts */
 .wall { fill: var(--ply); stroke: var(--ply-edge); stroke-width: 1; }

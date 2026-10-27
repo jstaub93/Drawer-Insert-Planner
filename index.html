@@ -87,7 +87,7 @@
         <li>To make two sizes equal, select a number inside one space, then a number inside another. They are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces.</li>
         <li>Divide a space again to build grids and nested layouts.</li>
-        <li>Choose <b>L-shape</b> to fence off a corner with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select the L to change which corner the pocket is in, or to delete it. Select either part of the L-shaped space to divide it too: the new dividers run across the whole L-shaped space, up to a wall or the L. The pocket can be divided like any space.</li>
+        <li>Choose <b>L-shape</b>, then pick the corner, to fence it off with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select the L to change which corner the pocket is in, or to delete it. Select either part of the L-shaped space to divide it too: the new dividers run across the whole L-shaped space, up to a wall or the L. The pocket can be divided like any space.</li>
         <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
         <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
       </ul>
@@ -125,7 +125,7 @@
       </div>
       <svg id="canvas" role="img" aria-label="Plan of the drawer from above. Select a space to divide it."></svg>
       <div class="popover" id="popover" hidden role="dialog" aria-label="Divide this space">
-        <div class="pop-title">Divide this space</div>
+        <div class="pop-title" id="pop-title">Divide this space</div>
         <div class="pop-grid" id="pop-grid"></div>
         <button type="button" class="pop-cancel" id="pop-cancel">Close</button>
       </div>

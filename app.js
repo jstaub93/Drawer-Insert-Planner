@@ -1372,9 +1372,13 @@ function openPopover(cellId, px, py) {
   bl.title = okL ? 'Fence off a corner with an L-shaped divider' : 'This space is too small for an L-shape';
   bl.setAttribute('aria-label', 'L-shape');
   bl.innerHTML = '<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><path d="M2 12h13v-10"/></svg><span>L-shape</span>';
-  bl.addEventListener('click', () => applyEll());
+  bl.addEventListener('click', () => chooseEllCorner(cell, px, py));       // not added yet: first ask which corner the pocket goes in
   grid.appendChild(bl);
   }
+  $('#pop-title').textContent = 'Divide this space';
+  placeDividePopover(px, py);
+}
+function placeDividePopover(px, py) {
   const pop = $('#popover');
   pop.hidden = false;
   const lab = $('#stage').getBoundingClientRect();
@@ -1382,14 +1386,32 @@ function openPopover(cellId, px, py) {
   pop.style.left = clamp(px - lab.left - w / 2, 8, lab.width - w - 8) + 'px';
   pop.style.top = clamp(py - lab.top + 12, 8, lab.height - h - 8) + 'px';
 }
+// The same menu, now asking which corner the L's pocket goes in; the L is only added when a corner is picked
+function chooseEllCorner(cell, px, py) {
+  const grid = $('#pop-grid');
+  grid.innerHTML = '';
+  for (const [c, name] of CORNERS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.title = `Pocket in the ${name} corner`; b.setAttribute('aria-label', `Pocket in the ${name} corner`);
+    b.innerHTML = `<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><rect class="pocket" x="${c[1] === 'l' ? 2 : 17}" y="${c[0] === 't' ? 2 : 12}" width="15" height="10"/></svg><span>${name[0].toUpperCase() + name.slice(1)}</span>`;
+    b.addEventListener('click', () => applyEll(c));
+    grid.appendChild(b);
+  }
+  const back = document.createElement('button');
+  back.type = 'button'; back.className = 'span2'; back.innerHTML = '<span>← Back</span>';
+  back.addEventListener('click', () => openPopover(cell.n.id, px, py));
+  grid.appendChild(back);
+  $('#pop-title').textContent = 'Pocket in which corner?';
+  placeDividePopover(px, py);
+}
 function closePopover() { $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
 
-function applyEll() {                                  // an L-shaped divider: a pocket in the top left corner, to be moved as needed
+function applyEll(corner) {                            // an L-shaped divider with its pocket in the chosen corner
   const n = popoverCell;
   if (!n) return;
   const hadLinks = state.eq.some(({ a, b }) => numId(a) === n.id || numId(b) === n.id);
   dropLinksFor([n.id]);
-  n.ell = { corner: 'tl', fx: 0.5, fy: 0.5 };
+  n.ell = { corner, fx: 0.5, fy: 0.5 };
   n.kids = [newLeaf(), newLeaf()];
   closePopover();
   commit();
