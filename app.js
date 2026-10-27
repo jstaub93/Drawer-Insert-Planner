@@ -38,6 +38,7 @@ const state = {
   decimal: false,                 // sizes are typed as decimals instead of picked from fraction lists
   segs: [],                       // the dividers (see the layout section)
   eq: [],                         // linked equal sizes: [{ a: size, b: size }, ...] (see the links section)
+  fix: [],                        // sizes set to a number: [{ ...size, value }, ...]
 };
 const hist = { stack: [], i: -1 };
 
@@ -128,10 +129,10 @@ function regionFaces(x, y, w, h, blockers) {
   }
   const at = (arr, v) => { let lo = 0, hi = arr.length - 2; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (arr[m] <= v) lo = m; else hi = m - 1; } return lo; };
   const faces = cellsOf.map((list, id) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [i, j] of list) { x0 = Math.min(x0, xs[i]); x1 = Math.max(x1, xs[i + 1]); y0 = Math.min(y0, ys[j]); y1 = Math.max(y1, ys[j + 1]); }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, i0 = Infinity, i1 = -1, j0 = Infinity, j1 = -1;
+    for (const [i, j] of list) { x0 = Math.min(x0, xs[i]); x1 = Math.max(x1, xs[i + 1]); y0 = Math.min(y0, ys[j]); y1 = Math.max(y1, ys[j + 1]); i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j); }
     const box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-    if (Math.abs(list.reduce((sum, [i, j]) => sum + (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]), 0) - box.w * box.h) < EPS * Math.max(box.w, box.h) * 2) return box;      // a plain rectangle
+    if (list.length === (i1 - i0 + 1) * (j1 - j0 + 1)) return box;      // every cell of its bounding grid: a plain rectangle
     // outline: the edges of the cells that border something else, chained into a loop (clockwise on screen)
     const next = new Map(), key = (i, j) => i * (ny + 1) + j, owner = (i, j) => (i < 0 || j < 0 || i >= nx || j >= ny ? -3 : comp[j * nx + i]);
     for (const [i, j] of list) {
@@ -530,14 +531,15 @@ function priceBreakdown() {
 const estimatePrice = () => priceBreakdown().total;
 
 /* ---------- history / persistence ---------- */
-const snapshot = () => JSON.stringify({ segs: state.segs, eq: state.eq });
+const snapshot = () => JSON.stringify({ segs: state.segs, eq: state.eq, fix: state.fix });
 function loadSnapshot(text) {
   const s = JSON.parse(text);
   state.segs = s.segs;
   state.eq = s.eq || [];
+  state.fix = s.fix || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq, fix: state.fix })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
@@ -551,10 +553,11 @@ function restore() {
       state.decimal = !!saved.decimal || [state.drawer.w, state.drawer.l, state.drawer.h, state.gap].some(v => v % EIGHTH !== 0);
       state.label = cleanLabel(saved.label);
       const { W, L } = drawerSize();
-      if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; }
+      state.fix = [];
+      if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; state.fix = Array.isArray(saved.fix) ? saved.fix : []; }
       else if (saved.root && saved.root.free && Array.isArray(saved.root.free.segs)) { state.segs = saved.root.free.segs; state.eq = []; }
       else { const m = migrateTree(saved.root, saved.eq, W, L); state.segs = m.segs; state.eq = m.eq; }      // a layout saved as a tree of grids and L-shapes: now just its dividers
-      if (!segsValid(state.segs, wholeRect())) { state.segs = []; state.eq = []; }        // a layout that cannot be made at this size: start empty
+      if (!segsValid(state.segs, wholeRect())) { state.segs = []; state.eq = []; state.fix = []; }        // a layout that cannot be made at this size: start empty
       nextId = state.segs.reduce((m, g) => Math.max(m, g.id), 0) + 1;
       return true;
     }
@@ -610,11 +613,11 @@ function eqGroups(eq = state.eq) {
   return { groupOf, groups: roots.map(r => members.get(r)) };
 }
 
-// Carry the links through an edit: an end follows its size if the two dividers (or what they became) still have it between them
-function remapLinks(eq, lineage, lay) {
+// Carry links (and sizes set to a number) through an edit: an end follows its size if the two dividers (or what they became) still have it between them
+function sizeMapper(lineage, lay) {
   const ms = allMeasures(lay);
   const near = (cands, at) => cands.reduce((best, m) => (!best || Math.hypot(m.at[0] - at[0], m.at[1] - at[1]) < Math.hypot(best.at[0] - at[0], best.at[1] - at[1]) ? m : best), null);
-  const mapEnd = e => {
+  return e => {
     let cands = ms.filter(m => m.ax === e.ax && m.lo === e.lo && m.hi === e.hi);
     if (!cands.length && lineage) {
       const los = e.lo === 'W' ? ['W'] : lineage.get(e.lo) || [], his = e.hi === 'W' ? ['W'] : lineage.get(e.hi) || [];
@@ -623,10 +626,18 @@ function remapLinks(eq, lineage, lay) {
     const m = near(cands, e.at);
     return m ? { ax: m.ax, lo: m.lo, hi: m.hi, at: m.at } : null;
   };
-  const out = [];
+}
+function remapLinks(eq, lineage, lay) {
+  const mapEnd = sizeMapper(lineage, lay), out = [];
   for (const { a, b } of eq) { const ea = mapEnd(a), eb = mapEnd(b); if (ea && eb && mkey(ea) !== mkey(eb)) out.push({ a: ea, b: eb }); }
   return { eq: out, dropped: eq.length - out.length };
 }
+function remapFixed(fix, lineage, lay) {
+  const mapEnd = sizeMapper(lineage, lay), out = [];
+  for (const f of fix) { const e = mapEnd(f); if (e && !out.some(o => mkey(o) === mkey(e))) out.push({ ...e, value: f.value }); }
+  return { fix: out, dropped: fix.length - out.length };
+}
+const hasConstraints = () => state.eq.length > 0 || state.fix.length > 0;
 
 function buildProblem(lines, R) {
   const index = new Map(lines.map((g, i) => [g.id, i]));
@@ -644,12 +655,13 @@ function sizeRow(prob, m) {
   if (m.lo === 'W') c -= across ? R.x : R.y; else { const i = prob.index.get(m.lo); if (i === undefined) return null; t.push([i, -1]); c -= WALL; }
   return { t, c };
 }
-function linkRows(prob, eq) {
+function linkRows(prob, eq, fix = []) {
   const rows = [];
   for (const { a, b } of eq) {
     const ra = sizeRow(prob, a), rb = sizeRow(prob, b);
     if (ra && rb) rows.push({ t: [...ra.t, ...rb.t.map(([i, k]) => [i, -k])], b: rb.c - ra.c });
   }
+  for (const f of fix) { const r = sizeRow(prob, f); if (r) rows.push({ t: r.t, b: f.value - r.c }); }       // a size set to a number
   return rows;
 }
 
@@ -694,9 +706,10 @@ function projectConstraints(prob, extra) {
 const segU = (g, R, pos) => (pos - (g.axis === 'v' ? R.x : R.y)) / ((g.axis === 'v' ? R.w : R.h) - WALL);
 // Solve the current layout against a set of links (and optionally some dividers held at given positions, for dragging).
 // { ok, prob, x }: ok when every link holds and the dividers are still clear of each other.
-function solveLinks(eq, { pins = [], noThin = true } = {}) {
+function solveLinks(eq, { pins = [], noThin = true, fix = state.fix, hold = [] } = {}) {
   const R = wholeRect(), lines = currentLayout().lines, prob = buildProblem(lines, R);
-  const extra = linkRows(prob, eq);
+  for (const id of hold) if (prob.index.has(id)) prob.w[prob.index.get(id)] = 1e-9;                  // dividers asked to stay put
+  const extra = linkRows(prob, eq, fix);
   for (const p of pins) extra.push({ t: [[prob.index.get(p.id), 1]], b: p.value });
   const { x, residual } = projectConstraints(prob, extra);
   const trial = state.segs.map(g => ({ ...g, u: segU(g, R, x[prob.index.get(g.id)]) }));
@@ -709,27 +722,45 @@ function applySolution(prob, x) {
   for (const g of state.segs) g.u = segU(g, prob.R, x[prob.index.get(g.id)]);
 }
 
-// After undo, redo or a change of drawer size, make sure the links still hold (or release them).
+// After undo, redo or a change of drawer size, make sure the links and set sizes still hold (or release them).
 function reconcileLinks(announce) {
-  if (!state.eq.length) return;
+  if (!hasConstraints()) return;
   const res = solveLinks(state.eq, { noThin: false });
   if (res.ok) { applySolution(res.prob, res.x); tidyLayout(); reanchorLinks(); }
-  else { state.eq = []; if (announce) showNote('The equal-size links could not be kept at this size, so they were released.', 'warn', 6000); }
+  else {
+    state.eq = []; state.fix = [];
+    if (announce) showNote('The equal-size links and set sizes could not be kept at this size, so they were released.', 'warn', 6000);
+  }
 }
 // Put each link's anchor back on its size (the spaces move when dividers do)
 function reanchorLinks() {
-  if (state.eq.length) state.eq = remapLinks(state.eq, null, currentLayout()).eq;
+  const lay = currentLayout();
+  if (state.eq.length) state.eq = remapLinks(state.eq, null, lay).eq;
+  if (state.fix.length) state.fix = remapFixed(state.fix, null, lay).fix;
+}
+// Does every link and set size hold in the layout as it is?
+function constraintsHold() {
+  const ms = allMeasures(currentLayout());
+  const val = e => { const m = ms.find(q => mkey(q) === mkey(e)); return m ? m.value : null; };
+  return state.eq.every(({ a, b }) => { const x = val(a), y = val(b); return x !== null && y !== null && Math.abs(x - y) < 1e-4; })
+    && state.fix.every(f => { const x = val(f); return x !== null && Math.abs(x - f.value) < 1e-4; });
 }
 
-// Make the plan the layout. Links follow their sizes through the edit; the ones that no longer mean anything are released.
-function applyPlan(plan, quietLinks) {
+// Make the plan the layout. Links and set sizes follow their sizes through the edit; the ones that no longer mean anything are released.
+function applyPlan(plan, quiet) {
   if (!plan) return false;
-  const had = state.eq.length;
+  const had = state.eq.length + state.fix.length;
   state.segs = plan.segs;
   if (had) {
-    const r = remapLinks(state.eq, plan.lineage, currentLayout());
-    state.eq = r.eq;
-    if (r.dropped && !quietLinks) showNote(r.dropped === 1 ? 'That edit released one equal-size link.' : `That edit released ${r.dropped} equal-size links.`, 'info', 5000);
+    const lay = currentLayout(), r = remapLinks(state.eq, plan.lineage, lay), f = remapFixed(state.fix, plan.lineage, lay);
+    state.eq = r.eq; state.fix = f.fix;
+    let dropped = r.dropped + f.dropped;
+    if (!constraintsHold()) {                                      // dividers that were joined or extended may have moved: put the sizes back, or release what cannot be
+      const res = solveLinks(state.eq, { noThin: false });
+      if (res.ok) applySolution(res.prob, res.x);
+      else { dropped += state.eq.length + state.fix.length; state.eq = []; state.fix = []; }
+    }
+    if (dropped && !quiet) showNote(dropped === 1 ? 'That edit released one equal-size link or set size.' : `That edit released ${dropped} equal-size links or set sizes.`, 'info', 5000);
   }
   return true;
 }
@@ -739,7 +770,7 @@ function tidyLayout() {
   const plan = finishLines(R, lay.lines.map(({ axis, pos, s, e }) => ({ axis, pos, s, e })), lay.cells);
   if (!plan) return;
   applyPlan(plan, true);
-  if (state.eq.length) { const res = solveLinks(state.eq, { noThin: false }); if (res.ok) applySolution(res.prob, res.x); }      // lines that were merged may have moved a hair: put the links back exactly
+  if (hasConstraints()) { const res = solveLinks(state.eq, { noThin: false }); if (res.ok) applySolution(res.prob, res.x); }      // lines that were merged may have moved a hair: put the links back exactly
 }
 
 /* ---------- zoom and pan ---------- */
@@ -832,18 +863,19 @@ function renderDrawer(svg, { interactive }) {
 
   // size of each space. Each number is its own target: select one, then another, to link them as equal.
   const { groupOf } = eqGroups();
+  const fixedKeys = new Map(state.fix.map(f => [mkey(f), f.value]));
   const nums = new Map(), chosenKey = pendingNum ? mkey(pendingNum) : null;
   const numEl = (m, text, x, y, anchor, size, boxed) => {
     const key = mkey(m);
     nums.set(key, m);
     const tw = text.length * 0.6 * size, x0 = anchor === 'middle' ? x - tw / 2 : x, pad = Math.max(3, size * 0.3);
-    const gi = groupOf.get(key), chosen = chosenKey === key;
+    const gi = groupOf.get(key), chosen = chosenKey === key, fixed = fixedKeys.has(key), cls = gi !== undefined ? `g${gi % 4}` : 'fx';
     let chip = '';
-    if (gi !== undefined) {
-      chip = `<rect class="num-chip g${gi % 4}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3" pointer-events="none"/>`
-        + `<g class="num-lock g${gi % 4}" pointer-events="none"><rect x="${x0 + tw + pad - 9}" y="${y - size * 0.7 - pad / 2 - 4}" width="11" height="9" rx="1.6"/><path d="M${x0 + tw + pad - 6.5} ${y - size * 0.7 - pad / 2 - 4}v-2.6a3 3 0 0 1 6 0v2.6"/></g>`;
+    if (gi !== undefined || fixed) {
+      chip = `<rect class="num-chip ${cls}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3" pointer-events="none"/>`
+        + `<g class="num-lock ${cls}" pointer-events="none"><rect x="${x0 + tw + pad - 9}" y="${y - size * 0.7 - pad / 2 - 4}" width="11" height="9" rx="1.6"/><path d="M${x0 + tw + pad - 6.5} ${y - size * 0.7 - pad / 2 - 4}v-2.6a3 3 0 0 1 6 0v2.6"/></g>`;
     } else if (boxed) chip = `<rect class="num-box" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3" pointer-events="none"/>`;
-    const tip = gi !== undefined ? 'Linked: stays equal to its partner. Select to unlock.' : (pendingNum ? 'Select to make this equal to the number you picked.' : 'Select, then pick a number in another space to make them equal.');
+    const tip = fixed ? `Set to ${fmt2(fixedKeys.get(key))}″. Select to change or unlock it.` : gi !== undefined ? 'Linked: stays equal to its partner. Select to unlock.' : (pendingNum ? 'Select to make this equal to the number you picked.' : 'Select, then pick a number in another space to make them equal.');
     return `${chip}<rect class="num-hit${chosen ? ' sel' : ''}" data-num="${key}" data-ncell="${m.cell}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3"><title>${tip}</title></rect>`
       + `<text class="cell-label" x="${x0}" y="${y}" font-size="${size}" dominant-baseline="central">${text}</text>`;
   };
@@ -1086,7 +1118,7 @@ function placeLines(d, target) {
   const roomy = trial => d.thin === undefined || minFace(segGeom(trial, R), R) >= d.thin - 1e-9;      // no space gets thinner than it was (or than MIN_CELL)
   const attempt = t => {
     const pins = pinsAt(t);
-    if (state.eq.length) {
+    if (hasConstraints()) {
       const res = solveLinks(state.eq, { pins });
       if (!res.ok || !roomy(state.segs.map(g => ({ ...g, u: segU(g, R, res.x[res.prob.index.get(g.id)]) })))) return null;
       return () => applySolution(res.prob, res.x);
@@ -1152,10 +1184,96 @@ function showNote(text, kind = 'warn', ms = 4500) {
 }
 function updateNote() {
   const el = $('#note-bar');
-  const msg = transientNote || (pendingNum ? { text: 'Now select the number it should match. Esc cancels.', kind: 'pending' } : null);
+  const msg = transientNote;
   el.hidden = !msg;
   if (msg) { el.textContent = msg.text; el.className = 'note-bar ' + msg.kind; }
+  updateSetBar();
 }
+
+/* ---------- setting a size to a number ----------
+ * Selecting a number (to link it) also offers "Set to a specific number" in a bar at the top of the editor. The size is then
+ * held at that number until it is unlocked, like a link: dragging or resizing cannot change it. A number that cannot be had is
+ * refused with the reason. */
+let setOpen = false;                                  // the number picker in the bar is showing
+const fmtSize = x => `${fmt2(x)}″`;
+// Hold the size at v while every other link and set size still holds, or null. Tries moving either divider of the size, then both.
+function trySetSize(m, v, geometryOnly) {
+  const fix = [...(geometryOnly ? [] : state.fix.filter(f => mkey(f) !== mkey(m))), { ax: m.ax, lo: m.lo, hi: m.hi, at: m.at, value: v }], eq = geometryOnly ? [] : state.eq;
+  for (const hold of [[], m.lo === 'W' ? [] : [m.lo], m.hi === 'W' ? [] : [m.hi]]) {
+    const res = solveLinks(eq, { fix, hold });
+    if (res.ok) return { res, fix };
+  }
+  return null;
+}
+// The smallest and largest this size can be (with the links and set sizes, or just the room there is)
+function sizeRange(m, geometryOnly) {
+  const R = wholeRect(), top = m.ax === 'x' ? R.w : R.h, ok = v => !!trySetSize(m, v, geometryOnly);
+  const edge = (from, to) => { if (ok(to)) return to; let a = from, b = to; for (let k = 0; k < 22; k++) { const mid = (a + b) / 2; if (ok(mid)) a = mid; else b = mid; } return a; };
+  return [edge(m.value, MIN_CELL), edge(m.value, top)];
+}
+// Why a size cannot be set to v
+function explainSize(m, v) {
+  const R = wholeRect(), which = m.ax === 'x' ? 'wide' : 'long', lo2 = x => fmtSize(Math.ceil(x * 100 - 1e-6) / 100), hi2 = x => fmtSize(Math.floor(x * 100 + 1e-6) / 100);
+  if (m.lo === 'W' && m.hi === 'W') return `This space runs from wall to wall, so the drawer sets how ${which} it is (${fmtSize(m.value)}). Change the drawer size to change it.`;
+  if (!(v >= MIN_CELL - 1e-9)) return `A space has to be at least 1/16″ ${which}, or the dividers around it would touch.`;
+  const geo = sizeRange(m, true);
+  if (v > geo[1] + 1e-6) return `That is too big. With the other dividers where they are (each kept at least 1/16″ clear of the next one), this space can be at most ${hi2(geo[1])} ${which}.`;
+  if (v < geo[0] - 1e-6) return `That is too small. With the other dividers where they are, this space can be at least ${lo2(geo[0])} ${which}.`;
+  const rng = sizeRange(m, false);
+  if (rng[1] - rng[0] < 1e-3) return `This number can't change right now: the numbers that are linked or set to a size hold it at ${fmtSize(m.value)}. Unlock one of them first.`;
+  return `That does not fit with the numbers that are linked or set to a size elsewhere: with them, this space can be between ${lo2(rng[0])} and ${hi2(rng[1])} ${which}. Unlock one of them, or choose a number in that range.`;
+}
+function setSizeFromBar() {
+  const m = pendingNum, err = $('#set-error');
+  let v;
+  if (state.decimal) {
+    v = parseDecimal($('#set-dec').value);
+    if (v === null) { err.textContent = 'Enter a number, such as 6.25.'; err.hidden = false; return; }
+    v /= IN;
+  } else v = +$('#set-select').value * EIGHTH / IN;
+  const hit = trySetSize(m, v, false);
+  if (!hit) { err.textContent = explainSize(m, v); err.hidden = false; return; }
+  applySolution(hit.res.prob, hit.res.x);
+  state.fix = hit.fix;
+  tidyLayout();
+  reanchorLinks();
+  pendingNum = null; setOpen = false;
+  transientNote = null;
+  commit();
+}
+function openSetForm() {
+  const m = pendingNum;
+  if (!m) return;
+  const R = wholeRect(), top = m.ax === 'x' ? R.w : R.h;
+  setOpen = true;
+  const sel = $('#set-select');
+  if (!sel.options.length || sel.dataset.top !== String(Math.floor(top * 8))) {            // every size in steps of 1/8″ that could fit between the walls
+    sel.innerHTML = '';
+    sel.dataset.top = String(Math.floor(top * 8));
+    for (let n = 1; n <= Math.floor(top * 8); n++) sel.add(new Option(`${fmtIn(n * EIGHTH)}″`, n));
+  }
+  sel.value = String(Math.min(Math.max(1, Math.round(m.value * 8)), Math.floor(top * 8)));
+  $('#set-dec').value = String(+m.value.toFixed(4));
+  $('#set-error').hidden = true;
+  updateSetBar();
+  (state.decimal ? $('#set-dec') : sel).focus();
+}
+function updateSetBar() {
+  const bar = $('#set-bar'), on = !!pendingNum;
+  bar.hidden = !on;
+  $('#stage').classList.toggle('has-setbar', on);
+  if (!on) { setOpen = false; return; }
+  $('#set-msg').textContent = setOpen ? `Set this number (now ${fmtSize(pendingNum.value)}) to:` : 'Now select the number it should match, or';
+  $('#set-open').hidden = setOpen;
+  $('#set-form').hidden = !setOpen;
+  $('#set-select').hidden = state.decimal; $('#set-dec').hidden = !state.decimal;
+}
+on('#set-open', 'click', openSetForm);
+on('#set-cancel', 'click', () => { pendingNum = null; setOpen = false; refresh(); });
+on('#set-apply', 'click', setSizeFromBar);
+on('#set-dec', 'input', e => { const t = cleanDecimalText(e.target.value); if (t !== e.target.value) e.target.value = t; $('#set-error').hidden = true; });
+on('#set-select', 'change', () => { $('#set-error').hidden = true; });
+on('#set-bar', 'keydown', e => { if (e.key === 'Enter' && setOpen) { e.preventDefault(); setSizeFromBar(); } else if (e.key === 'Escape') { e.stopPropagation(); pendingNum = null; setOpen = false; refresh(); } });
 
 /* ---------- linking two numbers ---------- */
 function onNumberClick(key, cellId, px, py) {
@@ -1182,8 +1300,8 @@ function onNumberClick(key, cellId, px, py) {
     commit();
     return;
   }
-  if (groupOf.has(key)) { openNumberPopover(key, px, py); return; }
-  pendingNum = { ...m, cell: cellId };
+  if (groupOf.has(key) || state.fix.some(f => mkey(f) === key)) { openNumberPopover(key, px, py); return; }
+  pendingNum = { ...m, cell: cellId }; setOpen = false;
   refresh();
 }
 
@@ -1191,12 +1309,20 @@ let numberKey = null;
 function openNumberPopover(key, px, py) {
   $('#ellpop').hidden = true; $('#popover').hidden = true; $('#divpop').hidden = true; popoverCell = null; dividerInfo = null;
   numberKey = key;
-  const { groups, groupOf } = eqGroups();
-  const others = groups[groupOf.get(key)].length - 1;
-  $('#numpop-note').textContent = `This number stays equal to ${others} other ${others === 1 ? 'number' : 'numbers'}.`;
+  const { groups, groupOf } = eqGroups(), fixed = state.fix.find(f => mkey(f) === key);
+  const others = groupOf.has(key) ? groups[groupOf.get(key)].length - 1 : 0;
+  const bits = [];
+  if (fixed) bits.push(`This number is set to ${fmtSize(fixed.value)} and stays that size.`);
+  if (others) bits.push(`This number stays equal to ${others} other ${others === 1 ? 'number' : 'numbers'}.`);
+  $('#numpop-note').textContent = bits.join(' ');
+  $('#numpop-unlock').hidden = !others;
+  $('#numpop-unfix').hidden = !fixed;
+  $('#numpop-set').textContent = fixed ? 'Change the set number' : 'Set to a specific number';
   placePopover($('#numpop'), px, py);
 }
-$('#numpop-link').addEventListener('click', () => { const k = numberKey, m = canvas._nums && canvas._nums.get(k); closePopover(); if (m) { pendingNum = { ...m, cell: -1 }; refresh(); } });
+$('#numpop-link').addEventListener('click', () => { const k = numberKey, m = canvas._nums && canvas._nums.get(k); closePopover(); if (m) { pendingNum = { ...m, cell: -1 }; setOpen = false; refresh(); } });
+$('#numpop-set').addEventListener('click', () => { const k = numberKey, m = canvas._nums && canvas._nums.get(k); closePopover(); if (m) { pendingNum = { ...m, cell: -1 }; refresh(); openSetForm(); } });
+$('#numpop-unfix').addEventListener('click', () => { state.fix = state.fix.filter(f => mkey(f) !== numberKey); closePopover(); commit(); });
 $('#numpop-unlock').addEventListener('click', () => {
   const key = numberKey;
   const { groups, groupOf } = eqGroups();
@@ -1606,6 +1732,7 @@ $('#clear').addEventListener('click', () => {
   if (isDefaultLayout()) return;
   state.segs = [];
   state.eq = [];
+  state.fix = [];
   pendingNum = null;
   closePopover();
   commit();

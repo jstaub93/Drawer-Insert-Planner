@@ -85,6 +85,7 @@
         <li>Select any space on the plan and choose how to divide it: 2 columns, 2 rows, or an L-shape. Divide a space again to build grids and nested layouts.</li>
         <li>Drag a divider to move it. Dividers snap to a sixteenth of an inch and line up with their neighbours. Dividers that end on it follow it. Where dividers cross, each part between the crossings can be moved on its own.</li>
         <li>Every size shown can be made equal to another. Select a number, then a number in another space: they are linked and stay equal while you edit or resize, shown with a padlock. Select a linked number to unlock it. A rectangle shows its width and length; an L-shaped space shows how wide and how deep its two legs are.</li>
+        <li>To make a size an exact number, select it and choose <b>Set to a specific number</b> in the bar at the top of the editor, then pick a size from the list (or type one in decimal mode). It stays that size, even when you move dividers or resize the drawer, until you select it and remove it. If the size cannot be had, the planner says why.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces. Where other dividers meet it you can also delete just the highlighted part, which can leave a new L. Dividers left hanging are carried on until they meet something.</li>
         <li>Choose <b>L-shape</b>, then pick the corner, to fence it off with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select an L to delete just that L. In an L-shaped space, click the part you want to divide (its two ends and the elbow light up as you point at them): the new divider goes through the middle of that part and runs on until it meets a wall or another divider. The L-shape button there offers only the corners that make sense.</li>
         <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
@@ -116,6 +117,19 @@
       </div>
     </div>
     <div class="stage" id="stage">
+      <div class="set-bar" id="set-bar" hidden>
+        <div class="set-row">
+          <span id="set-msg">Now select the number it should match, or</span>
+          <button type="button" class="btn" id="set-open">Set to a specific number</button>
+          <button type="button" class="set-x" id="set-cancel" aria-label="Cancel" title="Cancel (Esc)">×</button>
+        </div>
+        <div class="set-row" id="set-form" hidden>
+          <select id="set-select" aria-label="Size in inches"></select>
+          <input type="text" id="set-dec" class="dec-input" inputmode="decimal" autocomplete="off" aria-label="Size in inches, up to four decimals" hidden>
+          <button type="button" class="btn primary" id="set-apply">Set</button>
+        </div>
+        <p class="set-error" id="set-error" role="alert" hidden></p>
+      </div>
       <div class="note-bar" id="note-bar" role="status" hidden></div>
       <div class="zoom-ctl" id="zoom-ctl" role="group" aria-label="Zoom the plan">
         <button type="button" id="zoom-out" title="Zoom out (−)" aria-label="Zoom out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
@@ -147,11 +161,13 @@
         </div>
         <button type="button" class="pop-cancel" id="ellpop-close">Close</button>
       </div>
-      <div class="popover" id="numpop" hidden role="dialog" aria-label="Linked number">
-        <div class="pop-title">Linked number</div>
+      <div class="popover" id="numpop" hidden role="dialog" aria-label="Linked or set number">
+        <div class="pop-title">Locked number</div>
         <div class="divpop-body">
           <p class="note" id="numpop-note"></p>
-          <button type="button" class="btn primary" id="numpop-unlock">Unlock this number</button>
+          <button type="button" class="btn primary" id="numpop-unlock">Unlock from the linked numbers</button>
+          <button type="button" class="btn primary" id="numpop-unfix" hidden>Remove the set number</button>
+          <button type="button" class="btn" id="numpop-set">Set to a specific number</button>
           <button type="button" class="btn" id="numpop-link">Link to another number</button>
         </div>
         <button type="button" class="pop-cancel" id="numpop-close">Close</button>
