@@ -178,6 +178,8 @@ body.embed .zoom-ctl { right: auto; left: 10px; }
 .cell:hover { fill: var(--accent-soft); }
 .cell.lface:hover { fill: #fff; }                       /* an L-shaped space highlights one rectangle at a time (see .sub-hover) */
 .sub-hover { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; pointer-events: none; }
+#canvas.has-seg .hit:hover { fill: transparent; }          /* while a part is highlighted, nothing else lights up */
+.seg-sel { fill: #ffe45c; fill-opacity: .85; stroke: #b58a00; stroke-width: 1.5; pointer-events: none; }
 .sub-sel { fill: #bfe3dd; stroke: var(--accent); stroke-width: 2.5; pointer-events: none; }
 .hit { fill: transparent; }
 .hit[data-axis="v"] { cursor: ew-resize; }

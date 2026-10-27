@@ -1181,23 +1181,16 @@ function treeFromLines(R, segs) {
 }
 
 // The tree (rectangles attached as _r) that deleting the divider leaves, or null if it cannot be done.
-function planExtendedDelete(info) {
-  const n = findNode(state.root, info.nodeId);
-  if (!n) return null;
+const divSeg = d => (d.axis === 'v' ? { axis: 'v', pos: d.x, s: d.y, e: d.y + d.h } : { axis: 'h', pos: d.y, s: d.x, e: d.x + d.w });
+// With the divider (or the part of it) taken out of `segs`: dividers that ended on it are carried on until they meet something,
+// two that end up closer than 0.2 in become one, and the grid tree is rebuilt. The tree, or null if the result is not a layout.
+function rebuildWithout(segs, ax, linePos, span) {
   const { W, L } = drawerSize();
   const R = { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL };
-  const { divs, cells } = currentLayout();
-  const target = divs.find(x => x.n === n && x.axis === info.axis && x.i === info.i);
-  if (!target) return null;
-  const toSeg = d => (d.axis === 'v' ? { axis: 'v', pos: d.x, s: d.y, e: d.y + d.h } : { axis: 'h', pos: d.y, s: d.x, e: d.x + d.w });
-  const line = toSeg(target), ax = line.axis, perp = ax === 'v' ? 'h' : 'v';
-  const span = target.pieces && info.piece !== null ? target.pieces[info.piece] : [line.s, line.e];
-  const segs = divs.filter(d => d !== target).map(toSeg);
-  if (span[0] - line.s > EPS) segs.push({ axis: ax, pos: line.pos, s: line.s, e: span[0] });
-  if (line.e - span[1] > EPS) segs.push({ axis: ax, pos: line.pos, s: span[1], e: line.e });
-  const lo = line.pos, hi = line.pos + WALL;                         // the gap the deleted line leaves
+  const { cells } = currentLayout(), perp = ax === 'v' ? 'h' : 'v';
+  const lo = linePos, hi = linePos + WALL;                           // the gap the deleted line leaves
   const walls = ax === 'v' ? [R.x, R.x + R.w] : [R.y, R.y + R.h];
-  const stops = segs.filter(x => x.axis === ax && Math.abs(x.pos - line.pos) > EPS);        // what an extended divider can run into
+  const stops = segs.filter(x => x.axis === ax && Math.abs(x.pos - linePos) > EPS);        // what an extended divider can run into
   for (const x of segs) {
     if (x.axis !== perp) continue;
     if (Math.min(x.pos + WALL, span[1]) - Math.max(x.pos, span[0]) <= EPS) continue;       // does not touch the deleted piece
@@ -1215,8 +1208,52 @@ function planExtendedDelete(info) {
   return tooSmall(tree) ? null : tree;           // extending must not leave a sliver of a space
 }
 
-function applyExtendedDelete(info) {
-  const tree = planExtendedDelete(info);
+function planExtendedDelete(info) {
+  const n = findNode(state.root, info.nodeId);
+  if (!n) return null;
+  const { divs } = currentLayout();
+  const target = divs.find(x => x.n === n && x.axis === info.axis && x.i === info.i);
+  if (!target) return null;
+  const line = divSeg(target), ax = line.axis;
+  const span = target.pieces && info.piece !== null ? target.pieces[info.piece] : [line.s, line.e];
+  const segs = divs.filter(d => d !== target).map(divSeg);
+  if (span[0] - line.s > EPS) segs.push({ axis: ax, pos: line.pos, s: line.s, e: span[0] });
+  if (line.e - span[1] > EPS) segs.push({ axis: ax, pos: line.pos, s: span[1], e: line.e });
+  return rebuildWithout(segs, ax, line.pos, span);
+}
+
+/* Deleting just part of a divider: a divider is cut into parts by the dividers that meet it. The part between two of them (or
+ * between one and a wall) can be removed on its own; what is left may make a new L (a divider that ran past another now stops
+ * at it). The clicked part is found from the click, and the rest of the layout is rebuilt as when a whole divider is deleted. */
+function dividerSegment(info, px, py) {
+  const { divs } = currentLayout();
+  const target = info.chord ? divs.find(d => d.ell === 'c' && d.n.id === info.nodeId && d.chord === info.chord.kind && d.i === info.chord.i)
+    : divs.find(d => d.n.id === info.nodeId && !d.ell && d.axis === info.axis && d.i === info.i);
+  if (!target) return null;
+  const t = divSeg(target), lines = mergeLines(divs.map(divSeg));
+  const line = lines.find(l => l.axis === t.axis && Math.abs(l.pos - t.pos) < EPS && l.s <= t.s + EPS && l.e >= t.e - EPS);
+  if (!line) return null;
+  const [ix, iy] = pointToDrawer(px, py), along = line.axis === 'v' ? iy : ix;
+  const bands = lines.filter(q => q.axis !== line.axis && q.s <= line.pos + WALL + EPS && q.e >= line.pos - EPS && q.pos >= line.s - EPS && q.pos + WALL <= line.e + EPS)
+    .map(q => [q.pos, q.pos + WALL]);
+  if (bands.some(([a, b]) => along > a - EPS && along < b + EPS)) return null;           // on the joint itself
+  const s = Math.max(line.s, ...bands.filter(([, b]) => b <= along).map(([, b]) => b)), e = Math.min(line.e, ...bands.filter(([a]) => a >= along).map(([a]) => a));
+  if (e - s < EPS) return null;
+  return { axis: line.axis, pos: line.pos, s, e, whole: Math.abs(s - line.s) < EPS && Math.abs(e - line.e) < EPS };
+}
+function planPartDelete(seg) {
+  const segs = [];
+  for (const d of currentLayout().divs.map(divSeg)) {
+    if (d.axis === seg.axis && Math.abs(d.pos - seg.pos) < EPS && d.s < seg.e - EPS && d.e > seg.s + EPS) {
+      if (seg.s - d.s > EPS) segs.push({ ...d, e: seg.s });
+      if (d.e - seg.e > EPS) segs.push({ ...d, s: seg.e });
+    } else segs.push(d);
+  }
+  return rebuildWithout(segs, seg.axis, seg.pos, [seg.s, seg.e]);
+}
+
+function applyExtendedDelete(info) { return applyTree(planExtendedDelete(info)); }
+function applyTree(tree) {
   if (!tree) return false;
   const { regions } = currentLayout(), oldNodes = [];
   (function walk(nd) { oldNodes.push(nd); if (nd.kids) nd.kids.forEach(walk); })(state.root);
@@ -1271,7 +1308,7 @@ function deleteDivider(info) {
 }
 
 /* ---------- divider panel ---------- */
-let dividerInfo = null;
+let dividerInfo = null, partSeg = null;
 
 function placePopover(pop, px, py) {
   pop.hidden = false;
@@ -1288,11 +1325,29 @@ function openDividerPopover(info, px, py) {
   const [s1, s2] = info.size;
   $('#divpop-sizes').textContent = `${wide ? 'Left' : 'Back'} ${fmt2(s1)}″ · ${wide ? 'Right' : 'Front'} ${fmt2(s2)}″`;
   const blocker = deleteBlocker(info);
+  // a divider that other dividers meet can also be deleted in part: just the part under the click, up to the next divider
+  partSeg = null; setSegSel(null);
+  const seg = dividerSegment(info, px, py), part = $('#divpop-part');
+  part.hidden = !(seg && !seg.whole);
+  if (seg && !seg.whole) {
+    const tree = planPartDelete(seg);
+    partSeg = tree ? seg : null;
+    part.disabled = !tree;
+    part.title = tree ? 'Remove only the highlighted part of this divider' : 'Removing just that part would not leave a layout the planner can build';
+    setSegSel(seg);
+  }
+  $('#divpop-delete').textContent = part.hidden ? 'Delete divider' : 'Delete the whole divider';
   $('#divpop-delete').disabled = !!blocker;
-  $('#divpop-delnote').textContent = blocker || (info.chord || plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider (two that end up closer than 0.2″ become one).');
-  placePopover($('#divpop'), px, py);
+  $('#divpop-delnote').textContent = blocker || (!$('#divpop-part').hidden ? ($('#divpop-part').disabled ? 'Deleting just the highlighted part would not leave a layout the planner can build. You can delete the whole divider.' : 'The highlighted part goes up to the next divider and the rest stays, which can make a new L. Or delete the whole divider.') : info.chord || plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider (two that end up closer than 0.2″ become one).');
+  const pop = $('#divpop');
+  pop.hidden = false;                                  // beside the click, not over the divider and the part that is highlighted
+  const box = $('#stage').getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const rightRoom = box.right - (px + 18) - 8 >= w;
+  pop.style.left = clamp(rightRoom ? px - box.left + 18 : px - box.left - 18 - w, 8, box.width - w - 8) + 'px';
+  pop.style.top = clamp(py - box.top - h / 2, 8, box.height - h - 8) + 'px';
 }
 $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDivider(dividerInfo); });
+$('#divpop-part').addEventListener('click', () => { if (partSeg && applyTree(planPartDelete(partSeg))) { closePopover(); commit(); } });
 $('#divpop-close').addEventListener('click', () => closePopover());
 
 /* ---------- L-shaped dividers ---------- */
@@ -1494,7 +1549,7 @@ function chooseEllCorner(cell, px, py) {
   $('#pop-title').textContent = 'Pocket in which corner?';
   placeDividePopover(px, py);
 }
-function closePopover() { if (subSel) setSelected(null); $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
+function closePopover() { if (subSel) setSelected(null); if (segSel) setSegSel(null); $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
 
 function applyEll(corner) {                            // an L-shaped divider with its pocket in the chosen corner
   const n = popoverCell;
@@ -1526,15 +1581,20 @@ function rectAtPoint(cell, px, py) {
   const rs = faceRects(cell);
   return rs.find(r => ix >= r.x - EPS && ix <= r.x + r.w + EPS && iy >= r.y - EPS && iy <= r.y + r.h + EPS) || null;
 }
-let subHover = null, subSel = null;                      // the highlighted rectangle under the pointer, and the one a menu is open for
+let subHover = null, subSel = null, segSel = null;                      // the highlighted rectangle under the pointer, and the one a menu is open for
 function hoverMarkup(ox, oy, s) {
   const one = (cls, r) => (r ? `<rect class="${cls}" x="${ox + r.x * s}" y="${oy + r.y * s}" width="${r.w * s}" height="${r.h * s}"/>` : '');
-  return one('sub-hover', subHover && !(subSel && sameRect(subHover, subSel)) ? subHover : null) + one('sub-sel', subSel);
+  return one('sub-hover', subHover && !(subSel && sameRect(subHover, subSel)) ? subHover : null) + one('sub-sel', subSel) + one('seg-sel', segSel);
 }
 const sameRect = (a, b) => !!a && !!b && ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
 function paintHover() {
   const g = canvas.querySelector('#hover-layer'), vw = canvas._view;
   if (g && vw) g.innerHTML = hoverMarkup(vw.ox, vw.oy, vw.s);
+}
+function setSegSel(seg) {
+  const next = seg ? (seg.axis === 'v' ? { x: seg.pos, y: seg.s, w: WALL, h: seg.e - seg.s } : { x: seg.s, y: seg.pos, w: seg.e - seg.s, h: WALL }) : null;
+  if (sameRect(next, segSel) && !!next === !!segSel) return;
+  segSel = next; canvas.classList.toggle('has-seg', !!next); paintHover();
 }
 function setSelected(r) { if (!sameRect(r, subSel) || (!r && subSel)) { subSel = r; paintHover(); } }
 function updateHover(e) {
