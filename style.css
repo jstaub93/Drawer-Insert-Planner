@@ -174,7 +174,7 @@ body.embed .zoom-ctl { right: auto; left: 10px; }
 /* drawing parts */
 .wall { fill: var(--ply); stroke: var(--ply-edge); stroke-width: 1; }
 .outline { fill: none; stroke: var(--ink); stroke-width: 2; pointer-events: none; }
-.cell { fill: #fff; cursor: pointer; }
+.cell { fill: #fff; stroke: none; cursor: pointer; }        /* stroke: the page's icon rule (svg path) would outline an L-shaped space */
 .cell:hover { fill: var(--accent-soft); }
 .cell.lface:hover { fill: #fff; }                       /* an L-shaped space highlights one rectangle at a time (see .sub-hover) */
 .sub-hover { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; pointer-events: none; }
