@@ -1787,7 +1787,7 @@ const sortCells = cells => [...cells].sort((a, b) => (Math.abs(a.y - b.y) > 0.5 
 // The SVG carries a physical width/height, so any viewer that honours it shows true scale.
 function drawing() {
   const { W, L } = drawerSize();
-  const { cells, divs } = currentLayout();
+  const lay = currentLayout(), { cells, divs } = lay;
   const physical = physicalDividers(divs);
   const ratios = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48];
   const label = drawerLabel();
@@ -1822,12 +1822,36 @@ function drawing() {
       const lg = c.rects.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
       const lw = lg.w * k, lh = lg.h * k;
       cx = ox + (lg.x + lg.w / 2) * k; cy = oy + (lg.y + lg.h / 2) * k;
+      const legs = faceMeasures(c, lay.lines, lay.R);
+      const spots = legs.filter(m => m.arrow).map(m => [ox + (m.arrow.x0 !== undefined ? (m.arrow.x0 + m.arrow.x1) / 2 : m.arrow.x) * k, oy + (m.arrow.y0 !== undefined ? (m.arrow.y0 + m.arrow.y1) / 2 : m.arrow.y) * k]);
+      if (spots.length) {                                        // keep the letter clear of the leg sizes: the spot in the largest part furthest from them
+        let best = -1;
+        for (const fx of [0.25, 0.5, 0.75]) for (const fy of [0.25, 0.5, 0.75]) {
+          const px = ox + (lg.x + lg.w * fx) * k, py = oy + (lg.y + lg.h * fy) * k, d = Math.min(...spots.map(([sx, sy]) => Math.hypot(px - sx, (py - sy) * 1.3)));
+          if (d > best + 1e-6) { best = d; cx = px; cy = py; }
+        }
+      }
       if (lw >= 6 && lh >= 6) labels.push({ x: cx, y: cy + 1.5, s: labelFor(i), size: Math.min(4.6, lw * 0.6, lh * 0.6), bold: true });
       else callouts.push({ letter: labelFor(i), cx, cy });
+      for (const m of legs) {         // an L: how wide its upright leg is and how deep its flat leg is, with an arrow across each
+        const across = m.kind === 'legx', a = m.arrow, text = fmt2(m.value);
+        const tw = pdfWidth(text, 2.8, false), th = 2.8;
+        const [p0, p1] = across ? [ox + a.x0 * k, ox + a.x1 * k] : [oy + a.y0 * k, oy + a.y1 * k], at = across ? oy + a.y * k : ox + a.x * k, mid = (p0 + p1) / 2;
+        const room = p1 - p0;
+        if (room >= (across ? tw + 8 : th + 8)) {
+          const hd = 1.1;
+          if (across) { Ln(p0 + 0.3, at, p1 - 0.3, at, 0.2); for (const [x, d] of [[p0 + 0.3, 1], [p1 - 0.3, -1]]) { Ln(x, at, x + d * hd, at - 0.6, 0.2); Ln(x, at, x + d * hd, at + 0.6, 0.2); } }
+          else { Ln(at, p0 + 0.3, at, p1 - 0.3, 0.2); for (const [y, d] of [[p0 + 0.3, 1], [p1 - 0.3, -1]]) { Ln(at, y, at - 0.6, y + d * hd, 0.2); Ln(at, y, at + 0.6, y + d * hd, 0.2); } }
+          labels.push({ x: across ? mid : at, y: (across ? at : mid) + 1, s: text, size: 2.8, fill: '#333' });
+        } else if (room >= (across ? tw + 1 : th + 1.5)) labels.push({ x: across ? mid : at, y: (across ? at : mid) + 1, s: text, size: 2.8, fill: '#333' });
+      }
       return;
     }
+    const dims = `${fmt2(c.w)} × ${fmt2(c.h)}`, fit = Math.min(2.8, (w - 1.6) / pdfWidth(dims, 1, false));       // the sizes go in the space whenever they are legible there
     if (w >= 21 && h >= 12) {
-      labels.push({ x: cx, y: cy - 0.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 4.2, s: `${fmt2(c.w)} × ${fmt2(c.h)}`, size: 2.8, fill: '#333' });
+      labels.push({ x: cx, y: cy - 0.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 4.2, s: dims, size: 2.8, fill: '#333' });
+    } else if (fit >= 2 && h >= 10) {
+      labels.push({ x: cx, y: cy - 0.4, s: labelFor(i), size: Math.min(4.2, w * 0.6, h * 0.35), bold: true }, { x: cx, y: cy + 3.3, s: dims, size: fit, fill: '#333' });
     } else if (w >= 6 && h >= 6) {
       labels.push({ x: cx, y: cy + 1.5, s: labelFor(i), size: Math.min(4.6, w * 0.6, h * 0.6), bold: true });
     } else {
@@ -1882,8 +1906,8 @@ function drawing() {
   T(6, titleTop + 8, 'Drawer insert plan, seen from above', 4.2, { bold: true });
   T(6, titleTop + 15, `Insert ${fmtIn(state.dims.w)} × ${fmtIn(state.dims.l)} × ${fmtIn(state.dims.h)} in (width, length, height), for a drawer ${fmtIn(state.drawer.w)} × ${fmtIn(state.drawer.l)} × ${fmtIn(state.drawer.h)} in inside`, 2.9);
   T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
-  T(6, titleTop + 26, 'Each space shows width × length in inches.', 2.9, { fill: '#444' });
-  if (callouts.length) T(6, titleTop + 31.5, 'Small spaces are lettered in the margin; sizes are on page 2.', 2.9, { fill: '#444' });
+  T(6, titleTop + 26, 'Spaces show width × length in inches; an L shows its two leg sizes.', 2.9, { fill: '#444' });
+  if (callouts.length || labels.length < cells.length * 2) T(6, titleTop + 31.5, 'Sizes too small to print here, and small lettered spaces, are on page 2.', 2.9, { fill: '#444' });
   T(6, titleTop + 38, `Scale 1:${ratio}. Print at 100%, not fit-to-page.`, 3.2, { bold: true });
 
   // scale bar
@@ -1939,7 +1963,7 @@ function designData() {
     compartments: sorted.map((c, i) => ({
       label: labelFor(i), x_in: r(c.x), y_in: r(c.y), width_in: r(c.w), length_in: r(c.h),
       ...(c.poly && !c.cut ? { shape: 'polygon', note: 'Not a rectangle: width and length are the overall size; outline_in is its outline, corner to corner', outline_in: c.poly.map(([qx, qy]) => [r(qx), r(qy)]) } : {}),
-      ...(c.cut ? { shape: 'L', note: 'L-shaped: width and length are the overall size; the pocket cut out of it is cutout_in', cutout_in: { x: r(c.cut.x), y: r(c.cut.y), width: r(c.cut.w), length: r(c.cut.h) } } : {}),
+      ...(c.cut ? { shape: 'L', legs_in: (() => { const ms = faceMeasures(c, currentLayout().lines, currentLayout().R); return { upright_width: r(ms[0].value), flat_depth: r(ms[1].value) }; })(), note: 'L-shaped: width and length are the overall size; legs_in are how wide its upright leg is and how deep its flat leg is; the pocket cut out of it is cutout_in', cutout_in: { x: r(c.cut.x), y: r(c.cut.y), width: r(c.cut.w), length: r(c.cut.h) } } : {}),
     })),
     price_estimate: {
       drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
@@ -1994,7 +2018,8 @@ function sheetData({ pdf = false } = {}) {
         ['Billable weight (the greater, rounded up)', `${pb.shipping.billable} lb`],
       ] },
       { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) }]),
-      { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.map(c => [c.shape ? `${c.label} (${c.shape === 'L' ? 'L-shaped' : 'odd shape'}, overall)` : c.label, inch(c.width_in), inch(c.length_in)]) },
+      { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.flatMap(c => [[c.shape ? `${c.label} (${c.shape === 'L' ? 'L-shaped' : 'odd shape'}, overall)` : c.label, inch(c.width_in), inch(c.length_in)],
+        ...(c.legs_in ? [[`${c.label} upright leg (how wide)`, inch(c.legs_in.upright_width), ''], [`${c.label} flat leg (how deep)`, '', inch(c.legs_in.flat_depth)]] : [])]) },
     ],
   };
 }
