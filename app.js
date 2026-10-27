@@ -587,9 +587,11 @@ function renderDrawer(svg, { interactive }) {
   // sheet stock: walls and dividers show as the gaps between the open spaces
   out.push(`<rect class="wall" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
   for (const c of cells) {
-    if (c.poly) out.push(`<path class="cell" data-cell="${c.n.id}" d="M${c.poly.map(([qx, qy]) => `${ox + qx * s} ${oy + qy * s}`).join('L')}Z"/>`);
+    if (c.poly) out.push(`<path class="cell lface" data-cell="${c.n.id}" d="M${c.poly.map(([qx, qy]) => `${ox + qx * s} ${oy + qy * s}`).join('L')}Z"/>`);
     else out.push(`<rect class="cell" data-cell="${c.n.id}" x="${ox + c.x * s}" y="${oy + c.y * s}" width="${c.w * s}" height="${c.h * s}"/>`);
   }
+  out.push(`<g id="hover-layer" pointer-events="none">${hoverMarkup(ox, oy, s)}</g>`);
+  if (interactive) svg._cells = cells;
   out.push(`<rect class="outline" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
 
   // size of each space. Each number is its own target: select one, then another, to link them as equal.
@@ -767,6 +769,7 @@ canvas.addEventListener('pointerdown', e => {
 // Zoomed in, dragging a space (rather than clicking it) moves the view too. Two fingers pinch.
 canvas.addEventListener('pointermove', e => {
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (e.pointerType !== 'touch' && !drag && !ellDrag && !chordDrag && !pinch && !pan) updateHover(e);
   if (ellDrag) { moveEll(e); return; }
   if (chordDrag) { moveChord(e); return; }
   if (pinch) {
@@ -1205,7 +1208,7 @@ $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDiv
 $('#divpop-close').addEventListener('click', () => closePopover());
 
 /* ---------- L-shaped dividers ---------- */
-let ellDrag = null, chordDrag = null, ellNode = null, popoverFace = null;
+let ellDrag = null, chordDrag = null, ellNode = null, popoverFace = null, popoverRect = null;
 // How far a divider may move (offset of its edge from the edge of the space): MIN_CELL clear of its neighbours and the sides
 function bandRange(bands, at, tot) {
   return [at ? bands[at - 1].off + WALL + MIN_CELL : MIN_CELL, (at < bands.length - 1 ? bands[at + 1].off : tot) - WALL - MIN_CELL];
@@ -1333,9 +1336,7 @@ $('#ellpop-close').addEventListener('click', () => closePopover());
 /* ---------- split popover ---------- */
 const SPLITS = [
   { nc: 2, nr: 1, label: '2 columns', icon: '<line x1="17" y1="2" x2="17" y2="22"/>' },
-  { nc: 3, nr: 1, label: '3 columns', icon: '<line x1="11.5" y1="2" x2="11.5" y2="22"/><line x1="22.5" y1="2" x2="22.5" y2="22"/>' },
   { nc: 1, nr: 2, label: '2 rows', icon: '<line x1="2" y1="12" x2="32" y2="12"/>' },
-  { nc: 1, nr: 3, label: '3 rows', icon: '<line x1="2" y1="9" x2="32" y2="9"/><line x1="2" y1="15" x2="32" y2="15"/>' },
 ];
 
 function openPopover(cellId, px, py) {
@@ -1345,10 +1346,12 @@ function openPopover(cellId, px, py) {
   $('#ellpop').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; dividerInfo = null; numberKey = null;
   popoverCell = cell.n;
   popoverFace = cell.n.face ? cell : null;
+  popoverRect = popoverFace ? (rectAtPoint(cell, px, py) || faceRects(cell)[0]) : null;       // inside an L-shaped space: the rectangle that was clicked
+  setSelected(cell.cut ? popoverRect : null);
   const grid = $('#pop-grid');
   grid.innerHTML = '';
   for (const sp of SPLITS) {
-    const ok = cell.n.face ? !!faceSplit(cell, sp) : (cell.w - (sp.nc - 1) * WALL) / sp.nc >= MIN_CELL && (cell.h - (sp.nr - 1) * WALL) / sp.nr >= MIN_CELL;
+    const ok = cell.n.face ? !!faceSplit(cell, sp, popoverRect) : (cell.w - (sp.nc - 1) * WALL) / sp.nc >= MIN_CELL && (cell.h - (sp.nr - 1) * WALL) / sp.nr >= MIN_CELL;
     const b = document.createElement('button');
     b.type = 'button';
     b.disabled = !ok;
@@ -1404,7 +1407,7 @@ function chooseEllCorner(cell, px, py) {
   $('#pop-title').textContent = 'Pocket in which corner?';
   placeDividePopover(px, py);
 }
-function closePopover() { $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
+function closePopover() { if (subSel) setSelected(null); $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
 
 function applyEll(corner) {                            // an L-shaped divider with its pocket in the chosen corner
   const n = popoverCell;
@@ -1417,28 +1420,67 @@ function applyEll(corner) {                            // an L-shaped divider wi
   commit();
   if (hadLinks) showNote('Adding the L released this space\'s equal-size links.', 'info');
 }
+/* An L-shaped space is dealt with as 3 rectangles: its two ends and the elbow where they meet. Only the one under the pointer
+ * is highlighted, and a divider added from the menu goes through the middle of the one that was clicked. */
+function faceRects(cell) {
+  if (!cell.cut) return [{ x: cell.x, y: cell.y, w: cell.w, h: cell.h }];
+  const [beside, along] = cell.legs, elbow = { x: beside.x, y: along.y, w: beside.w, h: along.h };
+  const left = beside.x > cell.x, top = along.y > cell.y;
+  const A = { x: beside.x, w: beside.w, y: top ? cell.y : elbow.y + elbow.h, h: cell.h - elbow.h };                  // along the pocket
+  const C = { y: along.y, h: along.h, x: left ? cell.x : elbow.x + elbow.w, w: cell.w - elbow.w };                  // beyond the pocket
+  return [A, elbow, C];
+}
+function pointToDrawer(px, py) {
+  const vw = canvas._view, r = canvas.getBoundingClientRect();
+  return [(px - r.left - vw.ox) / vw.s, (py - r.top - vw.oy) / vw.s];
+}
+function rectAtPoint(cell, px, py) {
+  const [ix, iy] = pointToDrawer(px, py);
+  const rs = faceRects(cell);
+  return rs.find(r => ix >= r.x - EPS && ix <= r.x + r.w + EPS && iy >= r.y - EPS && iy <= r.y + r.h + EPS) || null;
+}
+let subHover = null, subSel = null;                      // the highlighted rectangle under the pointer, and the one a menu is open for
+function hoverMarkup(ox, oy, s) {
+  const one = (cls, r) => (r ? `<rect class="${cls}" x="${ox + r.x * s}" y="${oy + r.y * s}" width="${r.w * s}" height="${r.h * s}"/>` : '');
+  return one('sub-hover', subHover && !(subSel && sameRect(subHover, subSel)) ? subHover : null) + one('sub-sel', subSel);
+}
+const sameRect = (a, b) => !!a && !!b && ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
+function paintHover() {
+  const g = canvas.querySelector('#hover-layer'), vw = canvas._view;
+  if (g && vw) g.innerHTML = hoverMarkup(vw.ox, vw.oy, vw.s);
+}
+function setSelected(r) { if (!sameRect(r, subSel) || (!r && subSel)) { subSel = r; paintHover(); } }
+function updateHover(e) {
+  const hit = e.target.closest && e.target.closest('[data-cell]');
+  let next = null;
+  if (hit && canvas._cells) {
+    const c = canvas._cells.find(q => String(q.n.id) === hit.dataset.cell);
+    if (c && c.cut) next = rectAtPoint(c, e.clientX, e.clientY);
+  }
+  if (!sameRect(next, subHover) || (!next && subHover)) { subHover = next; paintHover(); }
+}
+canvas.addEventListener('pointerleave', () => { if (subHover) { subHover = null; paintHover(); } });
+
 // Dividers that split a space inside an L-shaped space evenly: the new fractions for the L's dividers, or null if they will not fit
-function faceSplit(cell, sp) {
+function faceSplit(cell, sp, rect) {
   const n = cell.ell, r = currentLayout().regions.get(n.id), e = { ...n.ell, cx: [...ellFractions(n.ell, 'cx')], cy: [...ellFractions(n.ell, 'cy')] };
-  const add = (key, count, lo, size, tot) => {
-    const part = (size - (count - 1) * WALL) / count, kind = key === 'cx' ? 'x' : 'y';
+  const add = (key, lo, size, tot) => {                                // one divider, through the middle of the chosen rectangle
+    const kind = key === 'cx' ? 'x' : 'y';
     const arm = ellBands({ ell: e }, r.w, r.h, kind).find(b => b.chord === -1).off;
-    for (let k = 1; k < count; k++) {
-      let off = lo + k * part + (k - 1) * WALL;
-      if (Math.abs(off - arm) < 0.25) off = arm;                       // close to the L's own divider: carry it on instead
-      e[key].push(off / (tot - WALL));
-    }
+    let off = lo + size / 2 - WALL / 2;
+    if (Math.abs(off - arm) < 0.25) off = arm;                         // close to the L's own divider: carry it on instead
+    e[key].push(off / (tot - WALL));
     e[key].sort((p, q) => p - q);
   };
-  if (sp.nc > 1) add('cx', sp.nc, cell.x - r.x, cell.w, r.w);
-  if (sp.nr > 1) add('cy', sp.nr, cell.y - r.y, cell.h, r.h);
+  if (sp.nc > 1) add('cx', rect.x - r.x, rect.w, r.w);
+  if (sp.nr > 1) add('cy', rect.y - r.y, rect.h, r.h);
   return ellValid({ ell: e }, r.w, r.h) ? e : null;
 }
 function applySplit(sp) {
   const n = popoverCell;
   if (!n) return;
   if (n.face) {
-    const e = faceSplit(popoverFace, sp);
+    const e = faceSplit(popoverFace, sp, popoverRect);
     if (!e) { showNote('There is no room to divide that space that way.'); return; }
     findNode(state.root, popoverFace.ell.id).ell = e;
     closePopover();
