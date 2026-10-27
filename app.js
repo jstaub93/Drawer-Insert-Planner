@@ -3,12 +3,11 @@
 /* =====================================================================
  * Drawer Insert Planner
  *
- * Model: a drawer (interior W x L x H, H overall) is filled by a tree of compartments.
+ * Model: a drawer (interior W x L x H, H overall) holds dividers, and nothing else: the
+ * layout is the set of dividers (see "the layout: a set of dividers"), and the spaces,
+ * their sizes and the L-shapes are all worked out from where the dividers are, so a
+ * layout behaves the same however it was built.
  * The bottom panel is WALL thick, so dividers stand H - WALL tall.
- * A leaf is one compartment. A split node divides its rectangle into a grid
- * of columns x rows (colF / rowF are size fractions that each sum to 1) and
- * holds one child per cell, row-major. Vertical dividers of a split node span
- * that node's full height; horizontal ones span its full width.
  * All geometry is stored in inches.
  * ===================================================================== */
 
@@ -37,8 +36,8 @@ const state = {
   label: '',                      // the customer's drawer label (a few words, printed at the top of the PDF)
   gap: 0,                         // safety gap (same unit), off each side of the width and length and once off the height
   decimal: false,                 // sizes are typed as decimals instead of picked from fraction lists
-  root: newLeaf(),
-  eq: [],                         // locked equal sizes: [{ a: '<space id>:w', b: '<space id>:l' }, ...]
+  segs: [],                       // the dividers (see the layout section)
+  eq: [],                         // linked equal sizes: [{ a: size, b: size }, ...] (see the links section)
 };
 const hist = { stack: [], i: -1 };
 
@@ -50,8 +49,6 @@ function cleanLabel(v) {
 }
 const drawerLabel = () => cleanLabel(state.label).trim();
 
-function newLeaf() { return { id: nextId++ }; }
-
 /* ---------- helpers ---------- */
 const $ = (s, el = document) => el.querySelector(s);
 const on = (s, ev, fn) => { const el = $(s); if (el) el.addEventListener(ev, fn); };
@@ -60,7 +57,7 @@ const on = (s, ev, fn) => { const el = $(s); if (el) el.addEventListener(ev, fn)
 const IN = 10000, EIGHTH = IN / 8;
 const unitsToIn = n => n / IN;
 const snapEighth = n => Math.round(n / EIGHTH) * EIGHTH;
-const fmt2 = v => v.toFixed(2);
+const fmt2 = v => (Math.round(v * 1e4) / 1e4).toFixed(2);             // rounded first, so two equal sizes always read alike
 const fmtDecimal = n => String(+(n / IN).toFixed(4));                     // 12.1875, 12.5, 12
 function fmtIn(n) {                                                      // a size as fractions (12 1/8) or, in decimal mode, decimals (12.125)
   if (state.decimal || n % EIGHTH !== 0) return fmtDecimal(n);
@@ -74,8 +71,6 @@ const svgEl = (tag, attrs = {}) => {
   for (const k in attrs) e.setAttribute(k, attrs[k]);
   return e;
 };
-function maxId(n) { return n.kids ? Math.max(n.id, ...n.kids.map(maxId)) : n.free ? Math.max(n.id, ...n.free.segs.map(g => g.id)) : n.id; }
-const isDefaultLayout = () => !state.root.kids && !state.root.free;
 
 /* ---------- layout ---------- */
 // The customer measures the drawer's inside (state.drawer) and chooses a safety gap (state.gap, taken off each side
@@ -98,76 +93,8 @@ function drawerSize() {
   return { W: unitsToIn(w), L: unitsToIn(l), H, partH: H - WALL };   // partH: height of dividers and walls
 }
 
-const sameFr = (x, y) => x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 1e-6);
+const isDefaultLayout = () => !state.segs.length;
 
-// A split whose every child is split along the other axis into identical parts is a grid in
-// disguise: its full-span divider can be rebuilt the other way round so each piece moves alone.
-function transposable(n, axis) {
-  if (!n.kids || n.ell) return false;
-  const k0 = n.kids[0];
-  if (axis === 'v') return n.rowF.length === 1 && n.colF.length > 1 && n.kids.every(k => k.colF && k.colF.length === 1 && k.rowF.length > 1 && sameFr(k.rowF, k0.rowF));
-  return n.colF.length === 1 && n.rowF.length > 1 && n.kids.every(k => k.rowF && k.rowF.length === 1 && k.colF.length > 1 && sameFr(k.colF, k0.colF));
-}
-
-function transposeAt(n, axis) {
-  if (axis === 'v') {
-    const R = [...n.kids[0].rowF], C = [...n.colF], old = n.kids;
-    n.colF = [1]; n.rowF = R;
-    n.kids = R.map((_, r) => ({ id: nextId++, colF: [...C], rowF: [1], kids: C.map((_, c) => old[c].kids[r]) }));
-  } else {
-    const C = [...n.kids[0].colF], R = [...n.rowF], old = n.kids;
-    n.rowF = [1]; n.colF = C;
-    n.kids = C.map((_, c) => ({ id: nextId++, rowF: [...R], colF: [1], kids: R.map((_, r) => old[r].kids[c]) }));
-  }
-}
-
-/* An L-shaped divider inside a space: a vertical and a horizontal divider that meet at a corner, each running from the
- * side of the space to that corner, so they fence off a rectangular pocket in one corner and leave an L-shaped space.
- * n.ell = { corner: 'tl' | 'tr' | 'bl' | 'br', fx, fy, cx, cy }: where the pocket is and its width and length as fractions
- * of the space less one sheet, then the positions (same fractions) of any further dividers in the L-shaped space:
- * cx are vertical, cy horizontal, each running the whole way across that space (until it meets a wall or the L).
- * n.kids = [the pocket, a stand-in for the L-shaped space]. The vertical divider takes the corner square and the
- * horizontal one butts against its face. */
-const faceId = (n, k) => n.kids[1].id + k / 1000;                  // the spaces the L-shaped space is divided into
-const ellFractions = (e, key) => (Array.isArray(e[key]) ? e[key] : []);
-/* Further dividers in the L-shaped space are kept as parallel lists: cx / cy are their positions (fractions of the space
- * less one sheet), ax / ay where along their length each was added (a fraction), and ox / oy the order they were added in
- * (e.seq counts). A divider runs from where it was added until it meets a wall, the L, or a divider added BEFORE it: the
- * first divider runs on, a later one stops against it. (Dividers with no order are all equally old: they all run through.) */
-const CHORD_LISTS = { x: ['cx', 'ax', 'ox'], y: ['cy', 'ay', 'oy'] };
-function ellNormalize(e) {
-  for (const kind of ['x', 'y']) {
-    const [P, A, O] = CHORD_LISTS[kind];
-    e[P] = ellFractions(e, P);
-    e[A] = e[P].map((_, i) => (Number.isFinite((e[A] || [])[i]) ? e[A][i] : 0.5));
-    e[O] = e[P].map((_, i) => (Number.isFinite((e[O] || [])[i]) ? e[O][i] : 0));
-  }
-  e.seq = Number.isFinite(e.seq) ? e.seq : 0;
-  return e;
-}
-function ellAddChord(e, kind, f, anchor) {
-  ellNormalize(e);
-  const [P, A, O] = CHORD_LISTS[kind];
-  e.seq += 1;
-  e[P].push(f); e[A].push(anchor); e[O].push(e.seq);
-}
-function ellRemoveChord(e, kind, i) {
-  ellNormalize(e);
-  for (const key of CHORD_LISTS[kind]) e[key].splice(i, 1);
-}
-const ellClone = e => JSON.parse(JSON.stringify(ellNormalize({ ...e })));
-
-// rect without its overlap (ow x oh) at the corner `left`/`top`: the polygon (null if nothing is left), the overlap, and the two arms
-function shapeMinusCorner(r, ow, oh, left, top) {
-  const x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
-  const cut = { x: left ? x0 : x1 - ow, y: top ? y0 : y1 - oh, w: ow, h: oh };
-  const cx1 = cut.x + cut.w, cy1 = cut.y + cut.h;
-  const key = (top ? 't' : 'b') + (left ? 'l' : 'r');
-  const poly = { tl: [[cx1, y0], [x1, y0], [x1, y1], [x0, y1], [x0, cy1], [cx1, cy1]], tr: [[x0, y0], [cut.x, y0], [cut.x, cy1], [x1, cy1], [x1, y1], [x0, y1]],
-    bl: [[x0, y0], [x1, y0], [x1, y1], [cx1, y1], [cx1, cut.y], [x0, cut.y]], br: [[x0, y0], [x1, y0], [x1, cut.y], [cut.x, cut.y], [cut.x, y1], [x0, y1]] }[key];
-  const legs = [left ? { x: cx1, y: y0, w: x1 - cx1, h: r.h } : { x: x0, y: y0, w: cut.x - x0, h: r.h }, top ? { x: x0, y: cy1, w: r.w, h: y1 - cy1 } : { x: x0, y: y0, w: r.w, h: cut.y - y0 }];
-  return { poly, cut, legs };
-}
 
 // The spaces left when the dividers (and the pocket) are taken out of a region: connected areas of free floor. Each is a
 // rectangle { x, y, w, h } or has a rectilinear outline `poly`. `rects` are the rectangles it is dealt with as: extend a
@@ -234,108 +161,47 @@ function regionFaces(x, y, w, h, blockers) {
   return faces.sort((p, q) => (Math.abs(p.y - q.y) > EPS ? p.y - q.y : p.x - q.x));
 }
 
-function ellGeom(e, x, y, w, h) {
-  const pw = e.fx * (w - WALL), ph = e.fy * (h - WALL), left = e.corner[1] === 'l', top = e.corner[0] === 't';
-  const vx = left ? x + pw : x + w - pw - WALL, hy = top ? y + ph : y + h - ph - WALL;
-  const vy0 = top ? y : hy, vy1 = top ? hy + WALL : y + h;
-  const hx0 = left ? x : vx + WALL, hx1 = left ? vx : x + w;
-  const cw = pw + WALL, ch = ph + WALL;
-  const cut = { x: left ? x : x + w - cw, y: top ? y : y + h - ch, w: cw, h: ch };       // the pocket and its two dividers
-  // further dividers: each starts from where it was added and runs until it meets a wall, the L, or an older divider
-  const items = [];
-  ellFractions(e, 'cx').forEach((f, i) => items.push({ kind: 'x', i, a: x + f * (w - WALL), anchor: y + (Number.isFinite((e.ax || [])[i]) ? e.ax[i] : 0.5) * h, n: Number.isFinite((e.ox || [])[i]) ? e.ox[i] : 0 }));
-  ellFractions(e, 'cy').forEach((f, i) => items.push({ kind: 'y', i, a: y + f * (h - WALL), anchor: x + (Number.isFinite((e.ay || [])[i]) ? e.ay[i] : 0.5) * w, n: Number.isFinite((e.oy || [])[i]) ? e.oy[i] : 0 }));
-  const made = [];
-  for (const it of [...items].sort((p, q) => p.n - q.n)) {
-    let c;
-    if (it.kind === 'x') {
-      const inPocket = left ? it.a + WALL <= cut.x + cut.w + EPS : it.a >= cut.x - EPS;
-      let [c0, c1] = inPocket ? (top ? [cut.y + cut.h, y + h] : [y, cut.y]) : [y, y + h];
-      for (const p of made) {                                   // older dividers across its path stop it
-        if (p.kind !== 'y' || p.n >= it.n || it.a + WALL <= p.x + EPS || it.a >= p.x + p.w - EPS || p.y + WALL <= c0 + EPS || p.y >= c1 - EPS) continue;
-        if (it.anchor >= p.y + WALL / 2) c0 = Math.max(c0, p.y + WALL); else c1 = Math.min(c1, p.y);
-      }
-      c = { ...it, axis: 'v', x: it.a, y: c0, w: WALL, h: c1 - c0, off: it.a - x };
-    } else {
-      const inPocket = top ? it.a + WALL <= cut.y + cut.h + EPS : it.a >= cut.y - EPS;
-      let [c0, c1] = inPocket ? (left ? [cut.x + cut.w, x + w] : [x, cut.x]) : [x, x + w];
-      for (const p of made) {
-        if (p.kind !== 'x' || p.n >= it.n || it.a + WALL <= p.y + EPS || it.a >= p.y + p.h - EPS || p.x + WALL <= c0 + EPS || p.x >= c1 - EPS) continue;
-        if (it.anchor >= p.x + WALL / 2) c0 = Math.max(c0, p.x + WALL); else c1 = Math.min(c1, p.x);
-      }
-      c = { ...it, axis: 'h', x: c0, y: it.a, w: c1 - c0, h: WALL, off: it.a - y };
-    }
-    made.push(c);
-  }
-  const chords = made.sort((p, q) => (p.kind === q.kind ? p.i - q.i : p.kind < q.kind ? -1 : 1));
-  const faces = regionFaces(x, y, w, h, [cut, ...chords]);
-  return { pw, ph, left, top, cut, chords, faces, corner: { x: vx + WALL / 2, y: hy + WALL / 2 },
-    pocket: { x: left ? x : x + w - pw, y: top ? y : y + h - ph, w: pw, h: ph },
-    v: { x: vx, y: vy0, w: WALL, h: vy1 - vy0 }, hz: { x: hx0, y: hy, w: hx1 - hx0, h: WALL } };
-}
-
-// Offsets (from the space's edge) of the dividers running one way in an L-shaped space, with the L's own divider: sorted
-function ellBands(n, w, h, kind) {
-  const e = n.ell, left = e.corner[1] === 'l', top = e.corner[0] === 't', tot = kind === 'x' ? w : h;
-  const arm = kind === 'x' ? (left ? e.fx * (w - WALL) : w - e.fx * (w - WALL) - WALL) : (top ? e.fy * (h - WALL) : h - e.fy * (h - WALL) - WALL);
-  const bands = ellFractions(e, kind === 'x' ? 'cx' : 'cy').map((f, i) => ({ off: f * (tot - WALL), chord: i }));
-  bands.push({ off: arm, chord: -1 });
-  return bands.sort((p, q) => p.off - q.off);
-}
-// Every divider in the L-shaped space must be MIN_CELL clear of the sides and of any divider running alongside it that
-// faces it (they overlap along their length). A divider in line with the L's own, picking up where it ends, is fine.
-function ellValid(n, w, h) {
-  const g = ellGeom(n.ell, 0, 0, w, h);
-  const all = [{ kind: 'x', axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h, arm: true }, { kind: 'y', axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h, arm: true }, ...g.chords];
-  for (const c of all) {
-    const lo = c.axis === 'v' ? c.x : c.y, tot = c.axis === 'v' ? w : h;
-    if (lo < MIN_CELL - EPS || tot - (lo + WALL) < MIN_CELL - EPS) return false;
-  }
-  for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
-    const p = all[i], q = all[j];
-    if (p.axis !== q.axis) continue;
-    const along = p.axis === 'v' ? [Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y)] : [Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x)];
-    if (along[0] <= EPS) continue;
-    const gap = p.axis === 'v' ? Math.abs(p.x - q.x) - WALL : Math.abs(p.y - q.y) - WALL;
-    if (gap < MIN_CELL - EPS) return false;
-  }
-  return g.chords.every(c => (c.axis === 'v' ? c.h : c.w) > EPS);
-}
-
-/* A layout that is not a nest of grids and L-shapes (for example, what is left when part of a divider is taken away) is kept as
- * its dividers: root = { id, free: { segs } }. Each divider has an axis and a position u (a fraction of the floor less one sheet)
- * and says what each end rests against: the wall, or the face of another divider (a = the start end, b = the finish end;
- * r = that divider's id, e = 0 its near face, 1 its far face). So dividers keep their ends on each other when one is moved
- * or the drawer is resized. */
-function freeSegs(node, R) {
-  const byId = new Map(node.free.segs.map(g => [g.id, g]));
-  const pos = g => (g.axis === 'v' ? R.x + g.u * (R.w - WALL) : R.y + g.u * (R.h - WALL));
-  const end = (spec, wall) => (spec.r == null || !byId.has(spec.r) ? wall : pos(byId.get(spec.r)) + spec.e * WALL);
-  return node.free.segs.map(g => {
+/* ---------- the layout: a set of dividers ----------
+ * A layout is nothing but its dividers, so it works the same however it was built. Each divider (a "seg") is a straight
+ * run of sheet with an axis, a position u (a fraction of the floor less one sheet, so the whole layout scales with the
+ * drawer) and what each of its two ends rests on: a wall, or the near (e = 0) or far (e = 1) face of another divider
+ * (r = that divider's id). Where a divider ends on another one the two stay joined when either is moved.
+ * seg = { id, axis: 'v' | 'h', u, a: { r, e }, b: { r, e } }   (a = the start end, b = the finish end; r null = a wall)
+ * Everything else (spaces, their sizes, L-shapes, parts of a divider) is worked out from where the dividers are. */
+function segGeom(segs, R) {
+  const byId = new Map(segs.map(g => [g.id, g]));
+  const lo = g => (g.axis === 'v' ? R.x : R.y), span = g => (g.axis === 'v' ? R.w : R.h) - WALL;
+  const pos = g => lo(g) + g.u * span(g);
+  const end = (spec, wall) => { const q = spec.r == null ? null : byId.get(spec.r); return q ? pos(q) + spec.e * WALL : wall; };
+  return segs.map(g => {
     const [w0, w1] = g.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
     return { id: g.id, axis: g.axis, pos: pos(g), s: end(g.a, w0), e: end(g.b, w1) };
   });
 }
-function freeFromLines(R, lines) {
-  const segs = lines.map(l => ({ id: nextId++, axis: l.axis, u: l.axis === 'v' ? (l.pos - R.x) / (R.w - WALL) : (l.pos - R.y) / (R.h - WALL), src: l }));
-  for (const g of segs) {
-    const l = g.src, [w0, w1] = l.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
+const lineRect = l => (l.axis === 'v' ? { x: l.pos, y: l.s, w: WALL, h: l.e - l.s } : { x: l.s, y: l.pos, w: l.e - l.s, h: WALL });
+
+// Seg records for divider lines { id, axis, pos, s, e } (ids already given); null if an end rests on nothing.
+function segsFromLines(R, lines) {
+  const segs = [];
+  for (const l of lines) {
+    const [w0, w1] = l.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
     const attach = (val, wall) => {
       if (Math.abs(val - wall) < EPS) return { r: null, e: 0 };
       let best = null;
-      for (const q of segs) {
-        if (q === g || q.axis === g.axis) continue;
-        const p = q.src;
-        if (p.s > l.pos + WALL + EPS || p.e < l.pos - EPS) continue;                             // it must reach this divider
-        for (const e of [0, 1]) { const d = Math.abs(val - (p.pos + e * WALL)); if (d < EPS && (!best || d < best.d)) best = { r: q.id, e, d }; }
+      for (const q of lines) {
+        if (q === l || q.axis === l.axis) continue;
+        if (q.s > l.pos + WALL + EPS || q.e < l.pos - EPS) continue;                            // it must reach this divider
+        for (const e of [0, 1]) { const d = Math.abs(val - (q.pos + e * WALL)); if (d < EPS && (!best || d < best.d - 1e-9)) best = { r: q.id, e, d }; }
       }
       return best ? { r: best.r, e: best.e } : null;
     };
-    g.a = attach(l.s, w0); g.b = attach(l.e, w1);
-    if (!g.a || !g.b) return null;                                                          // an end resting on nothing: not a layout
+    const a = attach(l.s, w0), b = attach(l.e, w1);
+    if (!a || !b) return null;
+    segs.push({ id: l.id, axis: l.axis, u: (l.pos - (l.axis === 'v' ? R.x : R.y)) / ((l.axis === 'v' ? R.w : R.h) - WALL), a, b });
   }
-  return { segs: segs.map(({ id, axis, u, a, b }) => ({ id, axis, u, a, b })) };
+  return segs;
 }
+
 // Dividers (absolute lines) are clear of the walls and of each other: MIN_CELL to the next divider running alongside that faces it
 function linesValid(R, lines) {
   for (const l of lines) {
@@ -349,56 +215,262 @@ function linesValid(R, lines) {
   }
   return true;
 }
+// Every divider end must still rest on the divider it was attached to, and the lines must be clear of each other
+function segsValid(segs, R) {
+  const lines = segGeom(segs, R), byId = new Map(lines.map(g => [g.id, g]));
+  if (!linesValid(R, lines)) return false;
+  return segs.every(g => {
+    const me = byId.get(g.id);
+    return [g.a, g.b].every(sp => { const q = sp.r == null ? null : byId.get(sp.r); return sp.r == null || (q && q.s <= me.pos + WALL + EPS && q.e >= me.pos - EPS); });
+  });
+}
 
-function layoutTree(root, W, L) {
-  const cells = [], divs = [], ells = [], regions = new Map();    // regions: every node's rectangle, for the constraint solver
-  (function walk(n, x, y, w, h) {
-    regions.set(n.id, { w, h, x, y });
-    if (n.free) {                                         // a layout kept as its dividers (see freeSegs)
-      const segs = freeSegs(n, { x, y, w, h }), rects = [];
-      for (const g of segs) {
-        const d = { n, free: true, sid: g.id, axis: g.axis, x: g.axis === 'v' ? g.pos : g.s, y: g.axis === 'v' ? g.s : g.pos, w: g.axis === 'v' ? WALL : g.e - g.s, h: g.axis === 'v' ? g.e - g.s : WALL };
-        divs.push(d); rects.push(d);
+// The thinnest piece of any space (the narrowest part of an L, say)
+function minFace(lines, R) {
+  let m = Infinity;
+  for (const f of regionFaces(R.x, R.y, R.w, R.h, lines.map(lineRect))) for (const r of f.rects || [f]) m = Math.min(m, r.w, r.h);
+  return m;
+}
+
+function layoutOf(segs, W, L) {
+  const R = { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL };
+  const lines = segGeom(segs, R);
+  const divs = lines.map(g => ({ sid: g.id, axis: g.axis, x: g.axis === 'v' ? g.pos : g.s, y: g.axis === 'v' ? g.s : g.pos, w: g.axis === 'v' ? WALL : g.e - g.s, h: g.axis === 'v' ? g.e - g.s : WALL }));
+  const cells = regionFaces(R.x, R.y, R.w, R.h, lines.map(lineRect)).map((f, k) => ({ ...f, id: k + 1 }));
+  return { cells, divs, lines, R };
+}
+function currentLayout() {
+  const { W, L } = drawerSize();
+  return layoutOf(state.segs, W, L);
+}
+const wholeRect = () => { const { W, L } = drawerSize(); return { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL }; };
+const divSeg = d => (d.axis === 'v' ? { axis: 'v', pos: d.x, s: d.y, e: d.y + d.h } : { axis: 'h', pos: d.y, s: d.x, e: d.x + d.w });
+const layoutLines = () => currentLayout().lines.map(({ axis, pos, s, e }) => ({ axis, pos, s, e }));
+
+/* ---------- putting a set of dividers together ---------- */
+// Segments that sit on the same line and touch end to end (across a crossing divider) are one divider, whatever order they were added in.
+function mergeLines(segs) {
+  const out = [];
+  for (const axis of ['v', 'h']) {
+    const list = segs.filter(x => x.axis === axis).sort((a, b) => a.pos - b.pos);
+    const groups = [];                                                // dividers on the same line (positions within EPS of the first)
+    for (const x of list) { const g = groups[groups.length - 1]; if (g && x.pos - g[0].pos < EPS) g.push(x); else groups.push([x]); }
+    for (const g of groups) {
+      g.sort((a, b) => a.s - b.s);
+      let cur = null;
+      for (const x of g) {
+        if (cur && x.s <= cur.e + WALL + EPS) { cur.e = Math.max(cur.e, x.e); cur.ext = cur.ext || x.ext; }
+        else { if (cur) out.push(cur); cur = { ...x, pos: g[0].pos }; }
       }
-      regionFaces(x, y, w, h, rects).forEach((f, k) => cells.push({ ...f, n: { id: n.id + (k + 1) / 1000, face: true }, free: n }));
-      return;
+      if (cur) out.push(cur);
     }
-    if (!n.kids) { cells.push({ n, x, y, w, h }); return; }
+  }
+  return out;
+}
+
+// Two parallel dividers that run side by side with less than NARROW between them are one divider: the one that was
+// extended moves onto the other (two extended ones join on the longer). Dividers that ended on the moved one follow it.
+const NARROW = 0.2;
+function joinNarrow(lines) {
+  for (let pass = 0; pass < 100; pass++) {
+    let pair = null;
+    for (const a of lines) {
+      for (const b of lines) {
+        if (a === b || a.axis !== b.axis || !(a.ext || b.ext)) continue;
+        const d = Math.abs(a.pos - b.pos);
+        if (d > EPS && d < WALL + NARROW - EPS && Math.min(a.e, b.e) - Math.max(a.s, b.s) > EPS) { pair = [a, b]; break; }
+      }
+      if (pair) break;
+    }
+    if (!pair) return lines;
+    const [a, b] = pair;
+    const keep = a.ext !== b.ext ? (a.ext ? b : a) : (a.e - a.s >= b.e - b.s ? a : b);
+    const move = keep === a ? b : a, old = move.pos;
+    move.pos = keep.pos;
+    for (const x of lines) {
+      if (x.axis === move.axis || x.pos + WALL <= move.s + EPS || x.pos >= move.e - EPS) continue;
+      if (Math.abs(x.e - old) < EPS) x.e = keep.pos;
+      else if (Math.abs(x.s - (old + WALL)) < EPS) x.s = keep.pos + WALL;
+    }
+    lines = mergeLines(lines.filter(x => x.e - x.s > EPS));
+  }
+  return lines;
+}
+
+// A divider end that rests on nothing is carried on until it meets a wall or a divider that runs across its whole width.
+// An end rests when it is on a divider (or at a wall) that crosses the line.
+function extendHanging(R, lines) {
+  const touches = (g, q) => q.s <= g.pos + WALL + EPS && q.e >= g.pos - EPS;
+  const covers = (g, q) => q.s <= g.pos + EPS && q.e >= g.pos + WALL - EPS;
+  for (let pass = 0; pass < 6; pass++) {
+    let changed = false;
+    for (const g of lines) {
+      const [w0, w1] = g.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
+      const perp = lines.filter(q => q.axis !== g.axis), on = (q, v) => v >= q.pos - EPS && v <= q.pos + WALL + EPS;
+      if (g.e < w1 - EPS && !perp.some(q => touches(g, q) && on(q, g.e))) {
+        g.e = Math.min(w1, ...perp.filter(q => covers(g, q) && q.pos >= g.e - EPS).map(q => q.pos)); g.ext = true; changed = true;
+      }
+      if (g.s > w0 + EPS && !perp.some(q => touches(g, q) && on(q, g.s))) {
+        g.s = Math.max(w0, ...perp.filter(q => covers(g, q) && q.pos + WALL <= g.s + EPS).map(q => q.pos + WALL)); g.ext = true; changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+/* Dividers keep their ids through an edit where they are still in the same place, so links and the like hold. `lineage` says
+ * which new dividers an old one became (a divider cut in two becomes two). */
+function assignIds(oldLines, lines) {
+  const used = new Set(), pairs = [];
+  for (const n of lines) for (const o of oldLines) {
+    if (o.axis !== n.axis || Math.abs(o.pos - n.pos) > EPS) continue;
+    const ov = Math.min(o.e, n.e) - Math.max(o.s, n.s);
+    if (ov > EPS) pairs.push({ n, o, ov });
+  }
+  pairs.sort((p, q) => q.ov - p.ov);
+  for (const { n, o } of pairs) if (n.id == null && !used.has(o.id)) { n.id = o.id; used.add(o.id); }
+  for (const n of lines) if (n.id == null) n.id = nextId++;
+  const lineage = new Map();
+  for (const { n, o } of pairs) { if (!lineage.has(o.id)) lineage.set(o.id, []); lineage.get(o.id).push(n.id); }
+  return lineage;
+}
+
+/* The plan for a set of divider lines: { segs, lineage }, or null when the result is not a layout (a space thinner than MIN_CELL
+ * that was not there before, or an end resting on nothing). Merging, ids and what each end rests on all come from the lines alone. */
+function finishLines(R, lines, cells, oldLines = currentLayout().lines, loose = false) {
+  lines = joinNarrow(mergeLines(lines)).map(l => ({ axis: l.axis, pos: l.pos, s: l.s, e: l.e }));
+  if (!loose) {
+    const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
+    const small = r => (r.w < MIN_CELL - EPS || r.h < MIN_CELL - EPS) && !cells.some(c => same(c, r));
+    if (!linesValid(R, lines)) return null;
+    if (regionFaces(R.x, R.y, R.w, R.h, lines.map(lineRect)).some(f => (f.rects || [f]).some(small))) return null;
+  }
+  const lineage = assignIds(oldLines, lines);
+  const segs = segsFromLines(R, lines);
+  return segs ? { segs, lineage } : null;
+}
+// The plan that the layout becomes with the divider lines `segs` left in it (hanging ends carried on), or null
+function rebuildWithout(segs) {
+  const R = wholeRect(), lines = mergeLines(segs);
+  extendHanging(R, lines);
+  return finishLines(R, lines, currentLayout().cells);
+}
+
+/* ---------- old saves: a tree of grids and L-shapes, turned into dividers ---------- */
+function legacyFractions(e, key) { return Array.isArray(e[key]) ? e[key] : []; }
+function legacyEllGeom(e, x, y, w, h) {
+  const pw = e.fx * (w - WALL), ph = e.fy * (h - WALL), left = e.corner[1] === 'l', top = e.corner[0] === 't';
+  const vx = left ? x + pw : x + w - pw - WALL, hy = top ? y + ph : y + h - ph - WALL;
+  const vy0 = top ? y : hy, vy1 = top ? hy + WALL : y + h;
+  const hx0 = left ? x : vx + WALL, hx1 = left ? vx : x + w;
+  const cut = { x: left ? x : x + w - pw - WALL, y: top ? y : y + h - ph - WALL, w: pw + WALL, h: ph + WALL };
+  const items = [];
+  legacyFractions(e, 'cx').forEach((f, i) => items.push({ kind: 'x', a: x + f * (w - WALL), anchor: y + (Number.isFinite((e.ax || [])[i]) ? e.ax[i] : 0.5) * h, n: Number.isFinite((e.ox || [])[i]) ? e.ox[i] : 0 }));
+  legacyFractions(e, 'cy').forEach((f, i) => items.push({ kind: 'y', a: y + f * (h - WALL), anchor: x + (Number.isFinite((e.ay || [])[i]) ? e.ay[i] : 0.5) * w, n: Number.isFinite((e.oy || [])[i]) ? e.oy[i] : 0 }));
+  const made = [];
+  for (const it of [...items].sort((p, q) => p.n - q.n)) {
+    let c;
+    if (it.kind === 'x') {
+      const inPocket = left ? it.a + WALL <= cut.x + cut.w + EPS : it.a >= cut.x - EPS;
+      let [c0, c1] = inPocket ? (top ? [cut.y + cut.h, y + h] : [y, cut.y]) : [y, y + h];
+      for (const p of made) {
+        if (p.kind !== 'y' || p.n >= it.n || it.a + WALL <= p.x + EPS || it.a >= p.x + p.w - EPS || p.y + WALL <= c0 + EPS || p.y >= c1 - EPS) continue;
+        if (it.anchor >= p.y + WALL / 2) c0 = Math.max(c0, p.y + WALL); else c1 = Math.min(c1, p.y);
+      }
+      c = { ...it, axis: 'v', x: it.a, y: c0, w: WALL, h: c1 - c0 };
+    } else {
+      const inPocket = top ? it.a + WALL <= cut.y + cut.h + EPS : it.a >= cut.y - EPS;
+      let [c0, c1] = inPocket ? (left ? [cut.x + cut.w, x + w] : [x, cut.x]) : [x, x + w];
+      for (const p of made) {
+        if (p.kind !== 'x' || p.n >= it.n || it.a + WALL <= p.y + EPS || it.a >= p.y + p.h - EPS || p.x + WALL <= c0 + EPS || p.x >= c1 - EPS) continue;
+        if (it.anchor >= p.x + WALL / 2) c0 = Math.max(c0, p.x + WALL); else c1 = Math.min(c1, p.x);
+      }
+      c = { ...it, axis: 'h', x: c0, y: it.a, w: c1 - c0, h: WALL };
+    }
+    made.push(c);
+  }
+  return { pocket: { x: left ? x : x + w - pw, y: top ? y : y + h - ph, w: pw, h: ph }, chords: made, v: { x: vx, y: vy0, w: WALL, h: vy1 - vy0 }, hz: { x: hx0, y: hy, w: hx1 - hx0, h: WALL } };
+}
+// The dividers of an old tree (as lines), and the rectangle of every undivided space in it (for the equal-size links)
+function legacyLines(root, W, L) {
+  const out = [], leaves = new Map();
+  const R = { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL };
+  (function walk(n, x, y, w, h) {
+    if (!n.kids) { leaves.set(n.id, { x, y, w, h }); return; }
     if (n.ell) {
-      const g = ellGeom(n.ell, x, y, w, h);
-      divs.push({ n, ell: 'v', axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h }, { n, ell: 'h', axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h });
-      for (const c of g.chords) divs.push({ n, ell: 'c', chord: c.kind, i: c.i, axis: c.axis, x: c.x, y: c.y, w: c.w, h: c.h, off: c.off, avail: c.kind === 'x' ? w : h });
+      const g = legacyEllGeom(n.ell, x, y, w, h);
+      out.push({ axis: 'v', pos: g.v.x, s: g.v.y, e: g.v.y + g.v.h }, { axis: 'h', pos: g.hz.y, s: g.hz.x, e: g.hz.x + g.hz.w });
+      for (const c of g.chords) out.push(c.axis === 'v' ? { axis: 'v', pos: c.x, s: c.y, e: c.y + c.h } : { axis: 'h', pos: c.y, s: c.x, e: c.x + c.w });
       walk(n.kids[0], g.pocket.x, g.pocket.y, g.pocket.w, g.pocket.h);
-      regions.set(n.kids[1].id, { w, h, x, y });
-      g.faces.forEach((f, k) => cells.push({ ...f, n: { id: faceId(n, k), face: true }, ell: n, grid: !!g.chords.length }));
-      ells.push({ n, geom: g, w, h });
       return;
     }
-    const nc = n.colF.length, nr = n.rowF.length;
-    const aw = w - (nc - 1) * WALL, ah = h - (nr - 1) * WALL;
+    const nc = n.colF.length, nr = n.rowF.length, aw = w - (nc - 1) * WALL, ah = h - (nr - 1) * WALL;
     const cx = [], cw = [], ry = [], rh = [];
     let p = x;
     n.colF.forEach(f => { cx.push(p); cw.push(f * aw); p += f * aw + WALL; });
     p = y;
     n.rowF.forEach(f => { ry.push(p); rh.push(f * ah); p += f * ah + WALL; });
-    const piecesV = transposable(n, 'v') ? (() => {
-      const fr = n.kids[0].rowF, ah2 = h - (fr.length - 1) * WALL; let q = y;
-      return fr.map(f => { const a = q; q += f * ah2 + WALL; return [a, a + f * ah2]; });
-    })() : null;
-    const piecesH = transposable(n, 'h') ? (() => {
-      const fr = n.kids[0].colF, aw2 = w - (fr.length - 1) * WALL; let q = x;
-      return fr.map(f => { const a = q; q += f * aw2 + WALL; return [a, a + f * aw2]; });
-    })() : null;
-    for (let i = 0; i < nc - 1; i++) divs.push({ n, axis: 'v', i, x: cx[i] + cw[i], y, w: WALL, h, avail: aw, pieces: piecesV, size: [cw[i], cw[i + 1]] });
-    for (let j = 0; j < nr - 1; j++) divs.push({ n, axis: 'h', i: j, x, y: ry[j] + rh[j], w, h: WALL, avail: ah, pieces: piecesH, size: [rh[j], rh[j + 1]] });
+    for (let i = 0; i < nc - 1; i++) out.push({ axis: 'v', pos: cx[i] + cw[i], s: y, e: y + h });
+    for (let j = 0; j < nr - 1; j++) out.push({ axis: 'h', pos: ry[j] + rh[j], s: x, e: x + w });
     n.kids.forEach((k, idx) => walk(k, cx[idx % nc], ry[Math.floor(idx / nc)], cw[idx % nc], rh[Math.floor(idx / nc)]));
-  })(root, WALL, WALL, W - 2 * WALL, L - 2 * WALL);
-  return { cells, divs, regions, ells };
+  })(root, R.x, R.y, R.w, R.h);
+  return { lines: out, leaves, R };
+}
+// Segs (and the links that can be kept) for a saved tree at drawer size W x L
+function migrateTree(root, eq, W, L) {
+  const { lines, leaves, R } = legacyLines(root, W, L);
+  const plan = finishLines(R, lines, [], [], true);
+  if (!plan) return { segs: [], eq: [] };
+  const lay = layoutOf(plan.segs, W, L), ms = allMeasures(lay);
+  const mapKey = key => {
+    const [id, dim] = String(key).split(':'), r = leaves.get(+id);
+    if (!r) return null;
+    const m = measureAt(lay.lines, lay.R, dim === 'w' ? 'x' : 'y', r.x + r.w / 2, r.y + r.h / 2);
+    return ms.some(q => mkey(q) === mkey(m)) ? { ax: m.ax, lo: m.lo, hi: m.hi, at: m.at } : null;
+  };
+  const links = [];
+  for (const { a, b } of eq || []) { const ea = mapKey(a), eb = mapKey(b); if (ea && eb && mkey(ea) !== mkey(eb)) links.push({ a: ea, b: eb }); }
+  return { segs: plan.segs, eq: links };
 }
 
-function currentLayout() {
-  const { W, L } = drawerSize();
-  return layoutTree(state.root, W, L);
+/* ---------- the sizes shown in the spaces ----------
+ * A size is the gap between the two nearest dividers (or walls) either side of a point, measured one way. It is named by
+ * what is on either side, { ax: 'x' (across) | 'y' (along), lo, hi } (a divider's id, or 'W' for a wall), so it means the same
+ * thing wherever it is shown. A rectangle shows its width and length; an L-shaped space shows how wide its upright leg is
+ * and how deep its flat leg is; other shapes show none. Any size can be set equal to any other. */
+const mkey = m => `${m.ax}:${m.lo}:${m.hi}`;
+function measureAt(lines, R, ax, x, y) {
+  const across = ax === 'x', p = across ? x : y, t = across ? y : x;
+  let lo = { id: 'W', c: across ? R.x : R.y }, hi = { id: 'W', c: across ? R.x + R.w : R.y + R.h };
+  for (const g of lines) {
+    if (g.axis !== (across ? 'v' : 'h') || g.s > t + EPS || g.e < t - EPS) continue;
+    const a = g.pos, b = g.pos + WALL;
+    if (b <= p + EPS && b > lo.c) lo = { id: g.id, c: b };
+    if (a >= p - EPS && a < hi.c) hi = { id: g.id, c: a };
+  }
+  return { ax, lo: lo.id, hi: hi.id, value: hi.c - lo.c, at: [x, y] };
+}
+function faceMeasures(c, lines, R) {
+  const m = (ax, x, y, extra) => ({ ...measureAt(lines, R, ax, x, y), cell: c.id, ...extra });
+  if (!c.poly) return [m('x', c.x + c.w / 2, c.y + c.h / 2, { kind: 'w' }), m('y', c.x + c.w / 2, c.y + c.h / 2, { kind: 'l' })];
+  if (c.poly.length === 6 && c.cut) {
+    const cut = c.cut, left = cut.x <= c.x + EPS, top = cut.y <= c.y + EPS;
+    const vx0 = left ? cut.x + cut.w : c.x, vw = c.w - cut.w, hy0 = top ? cut.y + cut.h : c.y, hh = c.h - cut.h;
+    const ay = cut.y + cut.h / 2, ax = cut.x + cut.w / 2;
+    return [m('x', vx0 + vw / 2, ay, { kind: 'legx', arrow: { x0: vx0, x1: vx0 + vw, y: ay } }), m('y', ax, hy0 + hh / 2, { kind: 'legy', arrow: { y0: hy0, y1: hy0 + hh, x: ax } })];
+  }
+  return [];
+}
+const allMeasures = lay => lay.cells.flatMap(c => faceMeasures(c, lay.lines, lay.R));
+
+// Gaps either side of a divider at one point along it: the space before it and after it
+function gapsAround(lines, R, g, t) {
+  let before = g.axis === 'v' ? g.pos - R.x : g.pos - R.y, after = (g.axis === 'v' ? R.x + R.w : R.y + R.h) - g.pos - WALL;
+  for (const q of lines) {
+    if (q === g || q.axis !== g.axis || q.s > t + EPS || q.e < t - EPS) continue;
+    if (q.pos + WALL <= g.pos + EPS) before = Math.min(before, g.pos - q.pos - WALL); else if (q.pos >= g.pos + WALL - EPS) after = Math.min(after, q.pos - g.pos - WALL);
+  }
+  return [before, after];
 }
 
 const dividerLength = d => (d.axis === 'v' ? d.h : d.w);
@@ -458,29 +530,32 @@ function priceBreakdown() {
 const estimatePrice = () => priceBreakdown().total;
 
 /* ---------- history / persistence ---------- */
-const snapshot = () => JSON.stringify({ root: state.root, eq: state.eq });
+const snapshot = () => JSON.stringify({ segs: state.segs, eq: state.eq });
 function loadSnapshot(text) {
   const s = JSON.parse(text);
-  state.root = s.root;
+  state.segs = s.segs;
   state.eq = s.eq || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, root: state.root, eq: state.eq })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-    if (saved && saved.dims && saved.root) {
+    if (saved && saved.dims && (saved.segs || saved.root)) {
       const k = saved.u === IN ? 1 : EIGHTH;                       // saves made before decimal input counted eighths of an inch
       const scale = o => o && { w: Math.round(o.w * k), l: Math.round(o.l * k), h: Math.round(o.h * k) };
       state.dims = scale(saved.dims);
       state.gap = Number.isFinite(saved.gap) && saved.gap * k >= 0 && saved.gap * k <= GAP_MAX ? Math.round(saved.gap * k) : 0;       // older saves were sizes of the insert itself: no gap
       state.drawer = scale(saved.drawer) || { w: state.dims.w + 2 * state.gap, l: state.dims.l + 2 * state.gap, h: state.dims.h + state.gap };
       state.decimal = !!saved.decimal || [state.drawer.w, state.drawer.l, state.drawer.h, state.gap].some(v => v % EIGHTH !== 0);
-      state.root = saved.root;
       state.label = cleanLabel(saved.label);
-      state.eq = Array.isArray(saved.eq) ? saved.eq : [];
-      nextId = maxId(state.root) + 1;
+      const { W, L } = drawerSize();
+      if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; }
+      else if (saved.root && saved.root.free && Array.isArray(saved.root.free.segs)) { state.segs = saved.root.free.segs; state.eq = []; }
+      else { const m = migrateTree(saved.root, saved.eq, W, L); state.segs = m.segs; state.eq = m.eq; }      // a layout saved as a tree of grids and L-shapes: now just its dividers
+      if (!segsValid(state.segs, wholeRect())) { state.segs = []; state.eq = []; }        // a layout that cannot be made at this size: start empty
+      nextId = state.segs.reduce((m, g) => Math.max(m, g.id), 0) + 1;
       return true;
     }
   } catch (e) { /* ignore corrupt data */ }
@@ -491,7 +566,6 @@ function resetHistory() {
   hist.i = 0;
 }
 function commit() {
-  settleFree();
   hist.stack = hist.stack.slice(0, hist.i + 1);
   hist.stack.push(snapshot());
   hist.i++;
@@ -516,20 +590,16 @@ function redo() {
 }
 
 /* ---------- equal-size links ----------
- * Two numbers in different spaces can be linked so they stay equal. Every space (and every region
- * a split creates) has a width and a length; the layout adds sum equations (a row of spaces plus the
- * dividers between them add up to the region they sit in) and each link adds "this = that".
- * The solver finds the sizes that satisfy all of them while changing the current sizes as little as
- * possible (changes are proportional to size, which matches how an unlinked layout scales). */
-const numKey = (id, dim) => `${id}:${dim}`;
-const numId = key => +key.split(':')[0];
-const numDim = key => key.split(':')[1];
-let pendingNum = null;             // the first number picked while linking
+ * Two sizes (see the sizes shown in the spaces) can be linked so they stay equal. A size is the gap between two dividers (or
+ * walls), so a link is a sum equation on where those dividers are. The solver finds the positions that satisfy every link while
+ * moving the dividers as little as possible (a divider with more room either side gives way more, which matches how an
+ * unlinked layout scales). A link is kept through any edit that leaves the size meaning the same thing, and released otherwise. */
+let pendingNum = null;             // the first size picked while linking: { ax, lo, hi, at }
 
 function eqGroups(eq = state.eq) {
   const parent = new Map();
   const find = k => { while (parent.get(k) !== k) k = parent.get(k); return k; };
-  for (const { a, b } of eq) { if (!parent.has(a)) parent.set(a, a); if (!parent.has(b)) parent.set(b, b); parent.set(find(a), find(b)); }
+  for (const { a, b } of eq) { const ka = mkey(a), kb = mkey(b); if (!parent.has(ka)) parent.set(ka, ka); if (!parent.has(kb)) parent.set(kb, kb); parent.set(find(ka), find(kb)); }
   const roots = [], members = new Map(), groupOf = new Map();
   for (const k of parent.keys()) {
     const r = find(k);
@@ -540,45 +610,53 @@ function eqGroups(eq = state.eq) {
   return { groupOf, groups: roots.map(r => members.get(r)) };
 }
 
-function dropLinksFor(ids) {
-  const gone = new Set(ids);
-  state.eq = state.eq.filter(({ a, b }) => !gone.has(numId(a)) && !gone.has(numId(b)));
-}
-
-function buildProblem(root, regions) {
-  const ids = [];
-  (function walk(n) { ids.push(n.id); if (n.kids) n.kids.forEach(walk); })(root);
-  const index = new Map(ids.map((id, k) => [id, k]));
-  const Wv = id => 2 * index.get(id), Lv = id => 2 * index.get(id) + 1;
-  const x0 = new Array(ids.length * 2);
-  ids.forEach(id => { x0[Wv(id)] = regions.get(id).w; x0[Lv(id)] = regions.get(id).h; });
-  const rows = [
-    { t: [[Wv(root.id), 1]], b: x0[Wv(root.id)] },       // the outer region is fixed by the drawer
-    { t: [[Lv(root.id), 1]], b: x0[Lv(root.id)] },
-  ];
-  (function walk(n) {
-    if (!n.kids) return;
-    if (n.ell) {                                          // the L-shaped space fills the whole region; the pocket's size is free
-      rows.push({ t: [[Wv(n.kids[1].id), 1], [Wv(n.id), -1]], b: 0 }, { t: [[Lv(n.kids[1].id), 1], [Lv(n.id), -1]], b: 0 });
-      n.kids.forEach(walk);
-      return;
+// Carry the links through an edit: an end follows its size if the two dividers (or what they became) still have it between them
+function remapLinks(eq, lineage, lay) {
+  const ms = allMeasures(lay);
+  const near = (cands, at) => cands.reduce((best, m) => (!best || Math.hypot(m.at[0] - at[0], m.at[1] - at[1]) < Math.hypot(best.at[0] - at[0], best.at[1] - at[1]) ? m : best), null);
+  const mapEnd = e => {
+    let cands = ms.filter(m => m.ax === e.ax && m.lo === e.lo && m.hi === e.hi);
+    if (!cands.length && lineage) {
+      const los = e.lo === 'W' ? ['W'] : lineage.get(e.lo) || [], his = e.hi === 'W' ? ['W'] : lineage.get(e.hi) || [];
+      cands = ms.filter(m => m.ax === e.ax && los.includes(m.lo) && his.includes(m.hi));
     }
-    const nc = n.colF.length, nr = n.rowF.length, kid = (r, c) => n.kids[r * nc + c];
-    for (let c = 0; c < nc; c++) for (let r = 1; r < nr; r++) rows.push({ t: [[Wv(kid(r, c).id), 1], [Wv(kid(0, c).id), -1]], b: 0 });
-    for (let r = 0; r < nr; r++) for (let c = 1; c < nc; c++) rows.push({ t: [[Lv(kid(r, c).id), 1], [Lv(kid(r, 0).id), -1]], b: 0 });
-    rows.push({ t: [...Array.from({ length: nc }, (_, c) => [Wv(kid(0, c).id), 1]), [Wv(n.id), -1]], b: -(nc - 1) * WALL });
-    rows.push({ t: [...Array.from({ length: nr }, (_, r) => [Lv(kid(r, 0).id), 1]), [Lv(n.id), -1]], b: -(nr - 1) * WALL });
-    n.kids.forEach(walk);
-  })(root);
-  return { ids, index, Wv, Lv, x0, rows };
+    const m = near(cands, e.at);
+    return m ? { ax: m.ax, lo: m.lo, hi: m.hi, at: m.at } : null;
+  };
+  const out = [];
+  for (const { a, b } of eq) { const ea = mapEnd(a), eb = mapEnd(b); if (ea && eb && mkey(ea) !== mkey(eb)) out.push({ a: ea, b: eb }); }
+  return { eq: out, dropped: eq.length - out.length };
 }
 
-const varOf = (prob, key) => (prob.index.has(numId(key)) ? (numDim(key) === 'w' ? prob.Wv(numId(key)) : prob.Lv(numId(key))) : -1);
+function buildProblem(lines, R) {
+  const index = new Map(lines.map((g, i) => [g.id, i]));
+  const w = lines.map(g => {
+    const [before, after] = gapsAround(lines, R, g, (g.s + g.e) / 2);
+    return Math.max((before + after) / 2, 0.01);
+  });
+  return { index, x0: lines.map(g => g.pos), w, rows: [], lines, R };
+}
+// a size as a sum of divider positions: { t: [[variable, coefficient]], c }, or null if one of its dividers is gone
+function sizeRow(prob, m) {
+  const { R } = prob, across = m.ax === 'x';
+  const t = []; let c = 0;
+  if (m.hi === 'W') c += across ? R.x + R.w : R.y + R.h; else { const i = prob.index.get(m.hi); if (i === undefined) return null; t.push([i, 1]); }
+  if (m.lo === 'W') c -= across ? R.x : R.y; else { const i = prob.index.get(m.lo); if (i === undefined) return null; t.push([i, -1]); c -= WALL; }
+  return { t, c };
+}
+function linkRows(prob, eq) {
+  const rows = [];
+  for (const { a, b } of eq) {
+    const ra = sizeRow(prob, a), rb = sizeRow(prob, b);
+    if (ra && rb) rows.push({ t: [...ra.t, ...rb.t.map(([i, k]) => [i, -k])], b: rb.c - ra.c });
+  }
+  return rows;
+}
 
-// Weighted least-change solution of A x = b. `heavy` variables resist change (1e6 times as strongly).
-function projectConstraints(prob, extra, heavy) {
+// Weighted least-change solution of A x = b.
+function projectConstraints(prob, extra) {
   const rows = prob.rows.concat(extra), n = prob.x0.length, m = rows.length;
-  const winv = prob.x0.map((v, i) => (heavy && heavy.has(i) ? 1e-6 : 1) * Math.max(v, 0.01));
+  const winv = prob.w;
   const r = rows.map(row => row.b - row.t.reduce((s, [i, c]) => s + c * prob.x0[i], 0));
   const byVar = Array.from({ length: n }, () => []);
   rows.forEach((row, ri) => row.t.forEach(([i, c]) => byVar[i].push([ri, c])));
@@ -610,57 +688,58 @@ function projectConstraints(prob, extra, heavy) {
   const x = prob.x0.slice();
   byVar.forEach((list, i) => { let d = 0; for (const [ri, c] of list) d += c * lambda[ri]; x[i] += winv[i] * d; });
   const residual = rows.reduce((mx, row) => Math.max(mx, Math.abs(row.t.reduce((s, [i, c]) => s + c * x[i], 0) - row.b)), 0);
-  const smallest = Math.min(...x);
-  return { ok: residual < 1e-6 && smallest >= MIN_CELL - 1e-6, x, residual };
+  return { x, residual };
 }
 
-function linkRows(prob, eq) {
-  const rows = [];
-  for (const { a, b } of eq) {
-    const ia = varOf(prob, a), ib = varOf(prob, b);
-    if (ia >= 0 && ib >= 0 && ia !== ib) rows.push({ t: [[ia, 1], [ib, -1]], b: 0 });
-  }
-  return rows;
-}
-
-// Write solved sizes back as fractions.
-function applySolution(prob, x) {
-  (function walk(n) {
-    if (!n.kids) return;
-    if (n.ell) {
-      n.ell.fx = clamp(x[prob.Wv(n.kids[0].id)] / (x[prob.Wv(n.id)] - WALL), 0.001, 0.999);
-      n.ell.fy = clamp(x[prob.Lv(n.kids[0].id)] / (x[prob.Lv(n.id)] - WALL), 0.001, 0.999);
-      n.kids.forEach(walk);
-      return;
-    }
-    const nc = n.colF.length, nr = n.rowF.length, kid = (r, c) => n.kids[r * nc + c];
-    const cols = Array.from({ length: nc }, (_, c) => x[prob.Wv(kid(0, c).id)]);
-    const rowsz = Array.from({ length: nr }, (_, r) => x[prob.Lv(kid(r, 0).id)]);
-    const sc = cols.reduce((s, v) => s + v, 0), sr = rowsz.reduce((s, v) => s + v, 0);
-    n.colF = cols.map(v => v / sc);
-    n.rowF = rowsz.map(v => v / sr);
-    n.kids.forEach(walk);
-  })(state.root);
-}
-
-// Variables of a space and everything inside it (they scale together with it).
-function subtreeVars(prob, nodeId) {
-  const set = new Set();
-  const add = nd => { set.add(prob.Wv(nd.id)); set.add(prob.Lv(nd.id)); if (nd.kids) nd.kids.forEach(add); };
-  const root = findNode(state.root, nodeId);
-  if (root) add(root);
-  return set;
-}
-
-// Solve the current layout against a set of links (and optionally one pinned size, for dragging).
-function solveLinks(eq, { pin = null, freeVars = null } = {}) {
-  const { W, L } = drawerSize();
-  const { regions } = layoutTree(state.root, W, L);
-  const prob = buildProblem(state.root, regions);
+const segU = (g, R, pos) => (pos - (g.axis === 'v' ? R.x : R.y)) / ((g.axis === 'v' ? R.w : R.h) - WALL);
+// Solve the current layout against a set of links (and optionally some dividers held at given positions, for dragging).
+// { ok, prob, x }: ok when every link holds and the dividers are still clear of each other.
+function solveLinks(eq, { pins = [], noThin = true } = {}) {
+  const R = wholeRect(), lines = currentLayout().lines, prob = buildProblem(lines, R);
   const extra = linkRows(prob, eq);
-  if (pin) extra.push({ t: [[pin.v(prob), 1]], b: pin.value });
-  const heavy = freeVars ? new Set(Array.from({ length: prob.x0.length }, (_, i) => i).filter(i => !freeVars(prob).has(i))) : null;
-  return { prob, ...projectConstraints(prob, extra, heavy) };
+  for (const p of pins) extra.push({ t: [[prob.index.get(p.id), 1]], b: p.value });
+  const { x, residual } = projectConstraints(prob, extra);
+  const trial = state.segs.map(g => ({ ...g, u: segU(g, R, x[prob.index.get(g.id)]) }));
+  // the dividers must stay clear of each other, and no space may end up thinner than it is now (or than MIN_CELL)
+  const ok = residual < 1e-6 && segsValid(trial, R) && (!noThin || minFace(segGeom(trial, R), R) >= Math.min(MIN_CELL, minFace(lines, R)) - 1e-9);
+  return { prob, x, ok };
+}
+// Write solved positions back
+function applySolution(prob, x) {
+  for (const g of state.segs) g.u = segU(g, prob.R, x[prob.index.get(g.id)]);
+}
+
+// After undo, redo or a change of drawer size, make sure the links still hold (or release them).
+function reconcileLinks(announce) {
+  if (!state.eq.length) return;
+  const res = solveLinks(state.eq, { noThin: false });
+  if (res.ok) { applySolution(res.prob, res.x); tidyLayout(); reanchorLinks(); }
+  else { state.eq = []; if (announce) showNote('The equal-size links could not be kept at this size, so they were released.', 'warn', 6000); }
+}
+// Put each link's anchor back on its size (the spaces move when dividers do)
+function reanchorLinks() {
+  if (state.eq.length) state.eq = remapLinks(state.eq, null, currentLayout()).eq;
+}
+
+// Make the plan the layout. Links follow their sizes through the edit; the ones that no longer mean anything are released.
+function applyPlan(plan, quietLinks) {
+  if (!plan) return false;
+  const had = state.eq.length;
+  state.segs = plan.segs;
+  if (had) {
+    const r = remapLinks(state.eq, plan.lineage, currentLayout());
+    state.eq = r.eq;
+    if (r.dropped && !quietLinks) showNote(r.dropped === 1 ? 'That edit released one equal-size link.' : `That edit released ${r.dropped} equal-size links.`, 'info', 5000);
+  }
+  return true;
+}
+// Dividers that now line up (after a drag) are one divider again, and everything is put in its canonical form
+function tidyLayout() {
+  const R = wholeRect(), lay = currentLayout();
+  const plan = finishLines(R, lay.lines.map(({ axis, pos, s, e }) => ({ axis, pos, s, e })), lay.cells);
+  if (!plan) return;
+  applyPlan(plan, true);
+  if (state.eq.length) { const res = solveLinks(state.eq, { noThin: false }); if (res.ok) applySolution(res.prob, res.x); }      // lines that were merged may have moved a hair: put the links back exactly
 }
 
 /* ---------- zoom and pan ---------- */
@@ -729,8 +808,8 @@ function renderDrawer(svg, { interactive }) {
   svg._view = { ox, oy, s, fit, rcx, rcy, W, L };
   if (interactive) updateZoomUI();
 
-  const { cells, divs, ells } = layoutTree(state.root, W, L);
-  const out = [];
+  const { cells, lines, R } = layoutOf(state.segs, W, L);
+  const out = [`<defs><marker id="leg-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="#0e7c72" stroke-width="1.4"/></marker></defs>`];
   const line = (x1, y1, x2, y2) => `<line class="dimline" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
   const slash = (x, y) => line(x - 4, y + 4, x + 4, y - 4);          // architectural end mark
 
@@ -744,8 +823,8 @@ function renderDrawer(svg, { interactive }) {
   // sheet stock: walls and dividers show as the gaps between the open spaces
   out.push(`<rect class="wall" x="${ox}" y="${oy}" width="${dw}" height="${dl}"/>`);
   for (const c of cells) {
-    if (c.poly) out.push(`<path class="cell lface" data-cell="${c.n.id}" d="M${c.poly.map(([qx, qy]) => `${ox + qx * s} ${oy + qy * s}`).join('L')}Z"/>`);
-    else out.push(`<rect class="cell" data-cell="${c.n.id}" x="${ox + c.x * s}" y="${oy + c.y * s}" width="${c.w * s}" height="${c.h * s}"/>`);
+    if (c.poly) out.push(`<path class="cell lface" data-cell="${c.id}" d="M${c.poly.map(([qx, qy]) => `${ox + qx * s} ${oy + qy * s}`).join('L')}Z"/>`);
+    else out.push(`<rect class="cell" data-cell="${c.id}" x="${ox + c.x * s}" y="${oy + c.y * s}" width="${c.w * s}" height="${c.h * s}"/>`);
   }
   out.push(`<g id="hover-layer" pointer-events="none">${hoverMarkup(ox, oy, s)}</g>`);
   if (interactive) svg._cells = cells;
@@ -753,84 +832,87 @@ function renderDrawer(svg, { interactive }) {
 
   // size of each space. Each number is its own target: select one, then another, to link them as equal.
   const { groupOf } = eqGroups();
-  const numEl = (key, text, x, y, anchor, size) => {
+  const nums = new Map(), chosenKey = pendingNum ? mkey(pendingNum) : null;
+  const numEl = (m, text, x, y, anchor, size, boxed) => {
+    const key = mkey(m);
+    nums.set(key, m);
     const tw = text.length * 0.6 * size, x0 = anchor === 'middle' ? x - tw / 2 : x, pad = Math.max(3, size * 0.3);
-    const gi = groupOf.get(key), chosen = pendingNum === key;
+    const gi = groupOf.get(key), chosen = chosenKey === key;
     let chip = '';
     if (gi !== undefined) {
       chip = `<rect class="num-chip g${gi % 4}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3" pointer-events="none"/>`
         + `<g class="num-lock g${gi % 4}" pointer-events="none"><rect x="${x0 + tw + pad - 9}" y="${y - size * 0.7 - pad / 2 - 4}" width="11" height="9" rx="1.6"/><path d="M${x0 + tw + pad - 6.5} ${y - size * 0.7 - pad / 2 - 4}v-2.6a3 3 0 0 1 6 0v2.6"/></g>`;
-    }
+    } else if (boxed) chip = `<rect class="num-box" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3" pointer-events="none"/>`;
     const tip = gi !== undefined ? 'Linked: stays equal to its partner. Select to unlock.' : (pendingNum ? 'Select to make this equal to the number you picked.' : 'Select, then pick a number in another space to make them equal.');
-    return `${chip}<rect class="num-hit${chosen ? ' sel' : ''}" data-num="${key}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3"><title>${tip}</title></rect>`
+    return `${chip}<rect class="num-hit${chosen ? ' sel' : ''}" data-num="${key}" data-ncell="${m.cell}" x="${x0 - pad}" y="${y - size * 0.7 - pad / 2}" width="${tw + 2 * pad}" height="${size * 1.4 + pad}" rx="3"><title>${tip}</title></rect>`
       + `<text class="cell-label" x="${x0}" y="${y}" font-size="${size}" dominant-baseline="central">${text}</text>`;
   };
   for (const c of cells) {
-    if (c.poly) {                                         // a space that is not a rectangle: just a name, in its largest part
+    const ms = faceMeasures(c, lines, R);
+    if (!ms.length) {                                     // a space that is neither a rectangle nor an L: just a name, in its largest part
       const lg = c.rects.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
       const lx0 = Math.max(ox + lg.x * s, 0), lx1 = Math.min(ox + (lg.x + lg.w) * s, bw), ly0 = Math.max(oy + lg.y * s, 0), ly1 = Math.min(oy + (lg.y + lg.h) * s, bh);
       const fs = Math.min(14, (lx1 - lx0 - 6) / 5.2, (ly1 - ly0 - 6) / 1.4);
-      if (fs >= 6) out.push(`<text class="cell-label" x="${(lx0 + lx1) / 2}" y="${(ly0 + ly1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">${c.poly.length === 6 ? 'L-shaped' : 'Odd shape'}</text>`);
+      if (fs >= 6) out.push(`<text class="cell-label" x="${(lx0 + lx1) / 2}" y="${(ly0 + ly1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">Odd shape</text>`);
+      continue;
+    }
+    if (c.poly) {                                         // an L: a number across each of its two legs, with an arrow showing what is measured
+      for (const m of ms) {
+        const across = m.kind === 'legx', a = m.arrow, text = fmt2(m.value) + '″';
+        const [p0, p1] = across ? [ox + a.x0 * s, ox + a.x1 * s] : [oy + a.y0 * s, oy + a.y1 * s], at = across ? oy + a.y * s : ox + a.x * s;
+        const [lo, hi] = across ? [20, bw - 20] : [20, bh - 20], v0 = Math.max(p0, lo), v1 = Math.min(p1, hi);       // zoomed in, only part of the arrow shows: put the number in that part
+        if (at < 0 || at > (across ? bh : bw) || v1 - v0 < 10) continue;
+        const mid = p0 + (p1 - p0) / 2 >= v0 && p0 + (p1 - p0) / 2 <= v1 ? (p0 + p1) / 2 : (v0 + v1) / 2;
+        const [cx, cy] = across ? [mid, at] : [at, mid];
+        const fs = 14, room = p1 - p0, chipW = text.length * 0.6 * fs + 16;
+        if (room >= chipW + 28) {
+          out.push(across ? `<line class="leg-line" x1="${p0 + 3}" y1="${at}" x2="${p1 - 3}" y2="${at}" marker-start="url(#leg-arrow)" marker-end="url(#leg-arrow)"/>` : `<line class="leg-line" x1="${at}" y1="${p0 + 3}" x2="${at}" y2="${p1 - 3}" marker-start="url(#leg-arrow)" marker-end="url(#leg-arrow)"/>`);
+          out.push(numEl(m, text, cx, cy, 'middle', fs, true));
+        } else if (across ? room >= text.length * 6 + 10 : true) {
+          const sz = across ? Math.min(fs, (room - 10) / (text.length * 0.6)) : fs;       // too narrow for the arrow: just the number
+          if (sz >= 8) out.push(numEl(m, text, cx, cy, 'middle', sz, true));
+        }
+      }
       continue;
     }
     // zoomed in, a space is mostly off screen: put its label in the part that is showing
     const px0 = Math.max(ox + c.x * s, 0), px1 = Math.min(ox + (c.x + c.w) * s, bw), py0 = Math.max(oy + c.y * s, 0), py1 = Math.min(oy + (c.y + c.h) * s, bh);
     if (px1 - px0 < 4 || py1 - py0 < 4) continue;
     const wpx = px1 - px0, hpx = py1 - py0;
-    const a = fmt2(c.w) + '″', b = fmt2(c.h) + '″';
+    const a = fmt2(ms[0].value) + '″', b = fmt2(ms[1].value) + '″';
     const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
-    const kw = numKey(c.n.id, 'w'), kl = numKey(c.n.id, 'l');
-    // a space inside an L-shaped space has sizes that follow its dividers, so they are shown but cannot be linked
-    const numFor = c.n.face ? (key, text, x, y, anchor, size) => `<text class="cell-label" x="${anchor === 'middle' ? x : x}" y="${y}" font-size="${size}"${anchor === 'middle' ? ' text-anchor="middle"' : ''} dominant-baseline="central">${text}</text>` : numEl;
     let fs = Math.min(16, (wpx - 12) / 8.6);
     if (fs >= 10.5 && hpx > 24) {
       const cw = 0.6 * fs, wW = a.length * cw, wL = b.length * cw, gap = fs * 0.85, x0 = cx - (wW + 2 * gap + wL) / 2;
-      out.push(numFor(kw, a, x0, cy, 'start', fs));
+      out.push(numEl(ms[0], a, x0, cy, 'start', fs));
       out.push(`<text class="cell-label" x="${x0 + wW + gap}" y="${cy}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">×</text>`);
-      out.push(numFor(kl, b, x0 + wW + 2 * gap, cy, 'start', fs));
+      out.push(numEl(ms[1], b, x0 + wW + 2 * gap, cy, 'start', fs));
     } else {
       fs = Math.min(14, (wpx - 6) / 3.4, (hpx - 6) / 3.2);
       if (fs >= 5.5) {
-        out.push(numFor(kw, a, cx, cy - fs * 0.75, 'middle', fs));
-        out.push(numFor(kl, b, cx, cy + fs * 0.75, 'middle', fs));
+        out.push(numEl(ms[0], a, cx, cy - fs * 0.75, 'middle', fs));
+        out.push(numEl(ms[1], b, cx, cy + fs * 0.75, 'middle', fs));
       }
     }
   }
+  if (interactive) svg._nums = nums;
 
   if (interactive) {
-    // grab areas for dividers (one per piece when the line sits on a grid)
-    for (const d of divs) {
-      if (d.ell || d.free) continue;
+    // grab areas for dividers: one per run between the dividers that cross it, so each can be moved on its own
+    for (const g of lines) {
       const thick = Math.max(WALL * s, 14);
-      const spans = d.pieces || [d.axis === 'v' ? [d.y, d.y + d.h] : [d.x, d.x + d.w]];
-      spans.forEach((sp, pi) => {
+      dragParts(lines, g).forEach((sp, pi) => {
         let x, y, w, h;
-        if (d.axis === 'v') { x = ox + (d.x + WALL / 2) * s - thick / 2; w = thick; y = oy + sp[0] * s; h = (sp[1] - sp[0]) * s; }
-        else { y = oy + (d.y + WALL / 2) * s - thick / 2; h = thick; x = ox + sp[0] * s; w = (sp[1] - sp[0]) * s; }
-        const piece = d.pieces ? ` data-piece="${pi}"` : '';
-        const key = `${d.n.id}:${d.axis}:${d.i}${d.pieces ? ':' + pi : ''}`;
-        const active = drag && drag.key === key ? ' active' : '';
-        out.push(`<rect class="hit${active}" data-hit="1" data-key="${key}" data-node="${d.n.id}" data-axis="${d.axis}" data-i="${d.i}"${piece} x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move. Select to see its sizes or delete it.</title></rect>`);
+        if (g.axis === 'v') { x = ox + (g.pos + WALL / 2) * s - thick / 2; w = thick; y = oy + sp[0] * s; h = (sp[1] - sp[0]) * s; }
+        else { y = oy + (g.pos + WALL / 2) * s - thick / 2; h = thick; x = ox + sp[0] * s; w = (sp[1] - sp[0]) * s; }
+        const active = lineDrag && lineDrag.items.some(it => it.id === g.id) ? ' active' : '';
+        out.push(`<rect class="hit${active}" data-seg="${g.id}" data-part="${pi}" data-axis="${g.axis}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move. Select to see its sizes or delete it.</title></rect>`);
       });
     }
-    // dividers of a layout kept as its dividers
-    for (const d of divs) {
-      if (!d.free) continue;
-      const thick = Math.max(WALL * s, 14);
-      const [x, y, w, h] = d.axis === 'v' ? [ox + (d.x + WALL / 2) * s - thick / 2, oy + d.y * s, thick, d.h * s] : [ox + d.x * s, oy + (d.y + WALL / 2) * s - thick / 2, d.w * s, thick];
-      const active = freeDrag && freeDrag.sid === d.sid ? ' active' : '';
-      out.push(`<rect class="hit${active}" data-free="${d.sid}" data-axis="${d.axis}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move. Select to see its sizes or delete it.</title></rect>`);
-    }
-    // L-shaped dividers: grab either arm to move it, or the corner to move both
-    for (const d of divs) {
-      if (!d.ell) continue;
-      const thick = Math.max(WALL * s, 14), k = d.ell === 'c' ? d.axis : d.ell;
-      const [x, y, w, h] = k === 'v' ? [ox + (d.x + WALL / 2) * s - thick / 2, oy + d.y * s, thick, d.h * s] : [ox + d.x * s, oy + (d.y + WALL / 2) * s - thick / 2, d.w * s, thick];
-      if (d.ell === 'c') out.push(`<rect class="hit ell-hit" data-chord="${d.chord}" data-axis="${d.axis}" data-i="${d.i}" data-node="${d.n.id}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move. Select to see its sizes or delete it.</title></rect>`);
-      else out.push(`<rect class="hit ell-hit" data-ell="${k}" data-axis="${k}" data-node="${d.n.id}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>Drag to move this part of the L. Select it for options.</title></rect>`);
-    }
-    for (const e of ells) {
-      out.push(`<circle class="ell-corner" data-ell="c" data-node="${e.n.id}" cx="${ox + e.geom.corner.x * s}" cy="${oy + e.geom.corner.y * s}" r="9"><title>Drag to move the corner of the L. Select it for options.</title></circle>`);
+    // an L (two dividers that end on each other): the round handle at its corner moves both
+    for (const j of ellJoints(state.segs)) {
+      const v = lines.find(l => l.id === j.v), h = lines.find(l => l.id === j.h);
+      if (v && h) out.push(`<circle class="ell-corner" data-joint="1" data-v="${j.v}" data-h="${j.h}" cx="${ox + (v.pos + WALL / 2) * s}" cy="${oy + (h.pos + WALL / 2) * s}" r="9"><title>Drag to move the corner of the L. Select it for options.</title></circle>`);
     }
     // front edge: a bracket under the drawer with its name in the middle
     const fy = oy + dl + 20, fx = ox + dw / 2;
@@ -839,7 +921,7 @@ function renderDrawer(svg, { interactive }) {
   }
 
   // empty drawer: invite the first division
-  if (interactive && !state.root.kids && !state.root.free && cells[0]) {
+  if (interactive && !state.segs.length && cells[0]) {
     const c = cells[0];
     const cx = ox + (c.x + c.w / 2) * s, cy = oy + (c.y + c.h / 2) * s;
     const hy = cy + 52;                                        // below the size label
@@ -853,26 +935,15 @@ function renderDrawer(svg, { interactive }) {
 
 /* ---------- editor interactions ---------- */
 const canvas = $('#canvas');
-let drag = null;       // active divider drag
-let freeDrag = null;   // active drag of a divider in a layout kept as its dividers
-let press = null;      // pending cell click
+let lineDrag = null;   // active drag of a divider (two, by the corner of an L)
+let press = null;      // pending click on a space
 let popoverCell = null;
-
-function findNode(n, id) {
-  if (n.id === id) return n;
-  if (n.kids) for (const k of n.kids) { const r = findNode(k, id); if (r) return r; }
-  return null;
-}
-
-let numPress = null;      // a pending click on a number
+let numPress = null;   // a pending click on a number
 
 canvas.addEventListener('pointerdown', e => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {                      // a second finger: pinch to zoom, and drag to move, instead of anything else
-    if (drag) { loadSnapshot(drag.before); drag = null; refresh(); }
-    if (ellDrag) { loadSnapshot(ellDrag.before); ellDrag = null; refresh(); }
-    if (chordDrag) { loadSnapshot(chordDrag.before); chordDrag = null; refresh(); }
-    if (freeDrag) { loadSnapshot(freeDrag.before); freeDrag = null; refresh(); }
+    if (lineDrag) { loadSnapshot(lineDrag.before); lineDrag = null; refresh(); }
     numPress = null; press = null; pan = null;
     const [a, b] = [...pointers.values()], vw = canvas._view, r = canvas.getBoundingClientRect();
     const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
@@ -881,53 +952,17 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (pointers.size > 2) return;
-  const ellEl = e.target.closest('[data-ell]');
-  if (ellEl) { closePopover(); startEllDrag(ellEl, e); return; }
-  const freeEl = e.target.closest('[data-free]');
-  if (freeEl) { closePopover(); startFreeDrag(freeEl, e); return; }
-  const chordEl = e.target.closest('[data-chord]');
-  if (chordEl) { closePopover(); startChordDrag(chordEl, e); return; }
   const num = e.target.closest('[data-num]');
   if (num) {
     closePopover();
-    numPress = { key: num.dataset.num, x: e.clientX, y: e.clientY };
+    numPress = { key: num.dataset.num, cell: +num.dataset.ncell, x: e.clientX, y: e.clientY };
     press = null;
     return;
   }
-  const hit = e.target.closest('[data-hit]');
-  if (hit) {
-    closePopover();
-    const before = snapshot();
-    let n = findNode(state.root, +hit.dataset.node);
-    const axis = hit.dataset.axis, i = +hit.dataset.i;
-    const piece = hit.dataset.piece === undefined ? null : +hit.dataset.piece;
-    const nodeId = n.id;
-    let key = hit.dataset.key;
-    if (piece !== null) {                       // grab one piece of a grid line: rebuild the grid so that piece is independent
-      transposeAt(n, axis);
-      n = n.kids[piece];
-      key = `${n.id}:${axis}:${i}`;
-    }
-    const f = axis === 'v' ? n.colF : n.rowF;
-    const { divs } = currentLayout();
-    const d = divs.find(x => x.n === n && x.axis === axis && x.i === i);
-    // positions of other segments on the same axis that touch this one, for snap-to-align
-    const span = axis === 'v' ? [d.y, d.y + d.h] : [d.x, d.x + d.w];
-    const cands = divs.filter(o => o !== d && o.axis === axis).filter(o => {
-      const os = axis === 'v' ? [o.y, o.y + o.h] : [o.x, o.x + o.w];
-      return os[0] <= span[1] + WALL + EPS && os[1] >= span[0] - WALL - EPS;
-    }).map(o => (axis === 'v' ? o.x : o.y));
-    drag = {
-      key, n, axis, i, f, avail: d.avail, pos0: axis === 'v' ? d.x : d.y, cands,
-      start: axis === 'v' ? e.clientX : e.clientY,
-      f0: f[i], pair: f[i] + f[i + 1], before, moved: false,
-      info: { nodeId, axis, i, piece, size: d.size },
-    };
-    canvas.setPointerCapture(e.pointerId);
-    renderDrawer(canvas, { interactive: true });
-    e.preventDefault();
-    return;
-  }
+  const corner = e.target.closest('[data-joint]');
+  if (corner) { closePopover(); startLineDrag([+corner.dataset.v, +corner.dataset.h], null, e, { joint: { v: +corner.dataset.v, h: +corner.dataset.h } }); return; }
+  const hit = e.target.closest('[data-seg]');
+  if (hit) { closePopover(); startLineDrag([+hit.dataset.seg], +hit.dataset.part, e, null); return; }
   const cell = e.target.closest('[data-cell]');
   press = cell ? { id: +cell.dataset.cell, x: e.clientX, y: e.clientY } : null;
   if (!cell) {
@@ -939,10 +974,8 @@ canvas.addEventListener('pointerdown', e => {
 // Zoomed in, dragging a space (rather than clicking it) moves the view too. Two fingers pinch.
 canvas.addEventListener('pointermove', e => {
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (e.pointerType !== 'touch' && !drag && !ellDrag && !chordDrag && !freeDrag && !pinch && !pan) updateHover(e);
-  if (ellDrag) { moveEll(e); return; }
-  if (chordDrag) { moveChord(e); return; }
-  if (freeDrag) { moveFree(e); return; }
+  if (e.pointerType !== 'touch' && !lineDrag && !pinch && !pan) updateHover(e);
+  if (lineDrag) { moveLines(e); return; }
   if (pinch) {
     if (pointers.size < 2) return;
     const [a, b] = [...pointers.values()], r = canvas.getBoundingClientRect();
@@ -978,81 +1011,136 @@ $('#zoom-fit').addEventListener('click', () => setZoom(1));
   mq.addEventListener('change', place);
 }
 
-// Move the dragged divider to `target` (the size of the space before it) while every equal-size link holds.
-// If the links make that impossible the divider stops at the nearest position that works.
-function dragWithLinks(target) {
-  const n = drag.n, axis = drag.axis, i = drag.i;
-  const nc = n.colF.length, nr = n.rowF.length;
-  const head = axis === 'v' ? n.kids[i] : n.kids[i * nc];
-  const pin = { v: prob => (axis === 'v' ? prob.Wv(head.id) : prob.Lv(head.id)), value: 0 };
-  const freeVars = prob => {                    // the two spaces beside the divider (and anything inside them) may change
-    const set = new Set();
-    const add = nd => { set.add(prob.Wv(nd.id)); set.add(prob.Lv(nd.id)); if (nd.kids) nd.kids.forEach(add); };
-    const lines = axis === 'v' ? [i, i + 1] : [i, i + 1];
-    for (const line of lines) for (let k = 0; k < (axis === 'v' ? nr : nc); k++) add(axis === 'v' ? n.kids[k * nc + line] : n.kids[line * nc + k]);
-    return set;
-  };
-  const attempt = value => solveLinks(state.eq, { pin: { v: pin.v, value }, freeVars });
-  const current = drag.f[i] * drag.avail;
-  let res = attempt(target);
-  if (!res.ok) {                                // find the furthest position that still works
-    let good = current, bad = target, best = null;
-    for (let k = 0; k < 14; k++) {
-      const mid = (good + bad) / 2, r = attempt(mid);
-      if (r.ok) { good = mid; best = r; } else bad = mid;
-    }
-    res = best;
-  }
-  if (res) { applySolution(res.prob, res.x); drag.moved = true; }
+/* ---------- moving dividers ---------- */
+// The runs of a divider between the dividers that cross it (both sides), each a [start, end]: each run can be moved on its own
+function dragParts(lines, g) {
+  const cuts = lines.filter(q => q.axis !== g.axis && q.s < g.pos - EPS && q.e > g.pos + WALL + EPS && q.pos >= g.s - EPS && q.pos + WALL <= g.e + EPS)
+    .map(q => [q.pos, q.pos + WALL]).sort((a, b) => a[0] - b[0]);
+  const parts = [];
+  let from = g.s;
+  for (const [a, b] of cuts) { if (a - from > EPS) parts.push([from, a]); from = Math.max(from, b); }
+  if (g.e - from > EPS) parts.push([from, g.e]);
+  return parts;
 }
-
-canvas.addEventListener('pointermove', e => {
-  if (!drag) return;
-  const { s } = canvas._view;
-  const cur = drag.axis === 'v' ? e.clientX : e.clientY;
-  const deltaIn = (cur - drag.start) / s;
-  const pairIn = drag.pair * drag.avail;
-  const base = drag.f0 * drag.avail;
-  let a = Math.round((base + deltaIn) / SNAP) * SNAP;
-  const near = drag.cands.map(c => c - drag.pos0).reduce((best, t) => (Math.abs(base + t - a) < Math.abs(best - a) ? base + t : best), Infinity);
-  if (Math.abs(near - a) < 8 / s) a = near;
-  if (pairIn < 2 * MIN_CELL) return;
-  a = clamp(a, MIN_CELL, pairIn - MIN_CELL);
-  if (state.eq.length) dragWithLinks(a);
-  else {
-    drag.moved = true;
-    drag.f[drag.i] = a / drag.avail;
-    drag.f[drag.i + 1] = (pairIn - a) / drag.avail;
+const sortLines = lines => lines.sort((p, q) => (p.axis === q.axis ? 0 : p.axis < q.axis ? 1 : -1) || Math.round(p.pos / EPS) - Math.round(q.pos / EPS) || p.s - q.s);
+// A divider that crosses others is cut at them so that one run can be moved alone; the run asked for keeps the divider's id
+function splitForDrag(gid, partIdx) {
+  const lay = currentLayout(), g = lay.lines.find(l => l.id === gid);
+  const parts = g ? dragParts(lay.lines, g) : [];
+  if (parts.length <= 1) return gid;
+  const lines = lay.lines.filter(l => l.id !== gid).map(({ id, axis, pos, s, e }) => ({ id, axis, pos, s, e }));
+  const ids = parts.map((_, i) => (i === partIdx ? gid : nextId++));
+  parts.forEach((p, i) => lines.push({ id: ids[i], axis: g.axis, pos: g.pos, s: p[0], e: p[1] }));
+  const segs = segsFromLines(lay.R, sortLines(lines));
+  if (!segs) return gid;
+  const lineage = new Map(lay.lines.map(l => [l.id, [l.id]]));
+  lineage.set(gid, ids);
+  applyPlan({ segs, lineage }, true);
+  return ids[partIdx];
+}
+// the gaps either side of a divider, against every divider that faces it
+function facingGaps(lines, R, g) {
+  let before = g.axis === 'v' ? g.pos - R.x : g.pos - R.y, after = (g.axis === 'v' ? R.x + R.w : R.y + R.h) - g.pos - WALL;
+  for (const q of lines) {
+    if (q === g || q.axis !== g.axis || Math.min(q.e, g.e) - Math.max(q.s, g.s) <= EPS) continue;
+    if (q.pos + WALL <= g.pos + EPS) before = Math.min(before, g.pos - q.pos - WALL); else if (q.pos >= g.pos + WALL - EPS) after = Math.min(after, q.pos - g.pos - WALL);
   }
-  renderDrawer(canvas, { interactive: true });
-});
+  return [before, after];
+}
+// The panel for a divider: what is either side of it, where it was clicked, and whether it is an arm of an L
+function dividerInfoFor(sid, px, py) {
+  const lay = currentLayout(), g = lay.lines.find(l => l.id === sid);
+  if (!g) return null;
+  const [ix, iy] = pointToDrawer(px, py), t = g.axis === 'v' ? iy : ix;
+  return { sid, axis: g.axis, size: gapsAround(lay.lines, lay.R, g, clamp(t, g.s, g.e)), joint: jointOf(sid) };
+}
+// The two dividers that end on each other (a vertical and a horizontal one): an L
+function ellJoints(segs) {
+  const out = [];
+  for (const v of segs) for (const h of segs) {
+    if (v.axis !== 'v' || h.axis !== 'h') continue;
+    if ([v.a, v.b].some(sp => sp.r === h.id) && [h.a, h.b].some(sp => sp.r === v.id)) out.push({ v: v.id, h: h.id });
+  }
+  return out;
+}
+const jointOf = sid => ellJoints(state.segs).find(j => j.v === sid || j.h === sid) || null;
 
-function endDrag(e) {
-  if (!drag) return;
-  const d = drag;
-  const changed = d.moved && snapshot() !== d.before;
-  if (!changed) loadSnapshot(d.before);              // a plain click leaves the layout untouched
-  drag = null;
-  if (changed) commit();
-  else {
-    refresh();
-    if (!d.moved && e) openDividerPopover(d.info, e.clientX, e.clientY);   // a click on a divider: its sizes, and delete
+function startLineDrag(ids, part, e, extra) {
+  const before = snapshot();
+  const info = !extra ? dividerInfoFor(ids[0], e.clientX, e.clientY) : null;
+  if (part !== null) ids = [splitForDrag(ids[0], part)];
+  const R = wholeRect(), lines = currentLayout().lines;
+  const items = ids.map(id => {
+    const g = lines.find(l => l.id === id), [b, a] = facingGaps(lines, R, g);
+    const cands = lines.filter(o => o !== g && o.axis === g.axis && Math.min(o.e, g.e) - Math.max(o.s, g.s) > -WALL - EPS).map(o => o.pos);
+    return { id, axis: g.axis, pos0: g.pos, lo: g.pos - b, hi: g.pos + a, cands, cur: g.pos };
+  });
+  lineDrag = { items, x0: e.clientX, y0: e.clientY, before, R, moved: false, info, joint: extra && extra.joint, thin: Math.min(MIN_CELL, minFace(lines, R)) };
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+// Put the dividers at `target` positions: all the way if that is allowed (clear of each other, links holding), otherwise as far as is
+function placeLines(d, target) {
+  const R = d.R, from = d.items.map(it => it.cur);
+  const pinsAt = t => d.items.map((it, i) => ({ id: it.id, value: from[i] + (target[i] - from[i]) * t }));
+  const roomy = trial => d.thin === undefined || minFace(segGeom(trial, R), R) >= d.thin - 1e-9;      // no space gets thinner than it was (or than MIN_CELL)
+  const attempt = t => {
+    const pins = pinsAt(t);
+    if (state.eq.length) {
+      const res = solveLinks(state.eq, { pins });
+      if (!res.ok || !roomy(state.segs.map(g => ({ ...g, u: segU(g, R, res.x[res.prob.index.get(g.id)]) })))) return null;
+      return () => applySolution(res.prob, res.x);
+    }
+    const trial = state.segs.map(g => { const p = pins.find(q => q.id === g.id); return p ? { ...g, u: segU(g, R, p.value) } : g; });
+    return segsValid(trial, R) && roomy(trial) ? () => { for (const p of pins) { const g = state.segs.find(q => q.id === p.id); g.u = segU(g, R, p.value); } } : null;
+  };
+  let best = attempt(1), reached = 1;
+  if (!best) {
+    let lo = 0, hi = 1;
+    for (let k = 0; k < 14; k++) { const mid = (lo + hi) / 2, f = attempt(mid); if (f) { lo = mid; best = f; } else hi = mid; }
+    reached = lo;
+  }
+  if (best) best();
+  d.items.forEach((it, i) => { it.cur = from[i] + (target[i] - from[i]) * reached; });
+}
+function moveLines(e) {
+  const d = lineDrag;
+  if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
+  d.moved = true;
+  const { s } = canvas._view;
+  const target = d.items.map(it => {
+    const delta = (it.axis === 'v' ? e.clientX - d.x0 : e.clientY - d.y0) / s;
+    let pos = it.lo + Math.round((it.pos0 + delta - it.lo) / SNAP) * SNAP;
+    const near = it.cands.reduce((best, c) => (Math.abs(c - pos) < Math.abs(best - pos) ? c : best), Infinity);
+    if (Math.abs(near - pos) < 8 / s) pos = near;
+    return clamp(pos, it.lo + MIN_CELL, Math.max(it.lo + MIN_CELL, it.hi - MIN_CELL));
+  });
+  placeLines(d, target);
+  renderDrawer(canvas, { interactive: true });
+}
+function endLineDrag(e) {
+  const d = lineDrag;
+  lineDrag = null;
+  if (!d) return;
+  if (d.moved && snapshot() !== d.before) { tidyLayout(); commit(); return; }
+  loadSnapshot(d.before);                                        // a plain click leaves the layout untouched
+  refresh();
+  if (!d.moved && e) {
+    if (d.joint) openEllPopover(d.joint, e.clientX, e.clientY);
+    else if (d.info) openDividerPopover(d.info, e.clientX, e.clientY);
   }
 }
 canvas.addEventListener('pointerup', e => {
-  if (ellDrag) { endEll(e); return; }
-  if (chordDrag) { endChord(e); return; }
-  if (freeDrag) { endFree(e); return; }
+  if (lineDrag) { endLineDrag(e); return; }
   if (numPress) {
     const np = numPress; numPress = null;
-    if (Math.hypot(e.clientX - np.x, e.clientY - np.y) < 6) onNumberClick(np.key, e.clientX, e.clientY);
+    if (Math.hypot(e.clientX - np.x, e.clientY - np.y) < 6) onNumberClick(np.key, np.cell, e.clientX, e.clientY);
     return;
   }
-  if (drag) { endDrag(e); return; }
   if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) openPopover(press.id, e.clientX, e.clientY);
   press = null;
 });
-canvas.addEventListener('pointercancel', () => { numPress = null; if (ellDrag) { loadSnapshot(ellDrag.before); ellDrag = null; refresh(); } if (chordDrag) { loadSnapshot(chordDrag.before); chordDrag = null; refresh(); } if (freeDrag) { loadSnapshot(freeDrag.before); freeDrag = null; refresh(); } if (drag) { endDrag(); } press = null; });
+canvas.addEventListener('pointercancel', () => { numPress = null; if (lineDrag) { loadSnapshot(lineDrag.before); lineDrag = null; refresh(); } press = null; });
 
 /* ---------- notes shown over the plan ---------- */
 let transientNote = null, noteTimer = null;
@@ -1070,25 +1158,32 @@ function updateNote() {
 }
 
 /* ---------- linking two numbers ---------- */
-function onNumberClick(key, px, py) {
+function onNumberClick(key, cellId, px, py) {
+  const m = canvas._nums && canvas._nums.get(key);
+  if (!m) return;
   const { groupOf } = eqGroups();
   if (pendingNum) {
-    if (pendingNum === key) { pendingNum = null; refresh(); return; }
-    if (numId(pendingNum) === numId(key)) { showNote('Pick a number in a different space.'); return; }
-    if (groupOf.has(key) && groupOf.get(key) === groupOf.get(pendingNum)) { pendingNum = null; showNote('Those two are already linked.'); refresh(); return; }
-    const trial = [...state.eq, { a: pendingNum, b: key }];
-    // only the two spaces being linked are meant to change; other spaces move only if the sums force them to
-    const res = solveLinks(trial, { freeVars: prob => new Set([...subtreeVars(prob, numId(pendingNum)), ...subtreeVars(prob, numId(key))]) });
+    if (mkey(pendingNum) === key) {                              // the same number again: let go of it
+      if (pendingNum.cell === cellId) { pendingNum = null; refresh(); return; }
+      pendingNum = null; showNote('Those two are already the same size, because they sit between the same two dividers.', 'info'); refresh(); return;
+    }
+    if (pendingNum.cell === cellId) { showNote('Pick a number in a different space.'); return; }
+    if (groupOf.has(key) && groupOf.get(key) === groupOf.get(mkey(pendingNum))) { pendingNum = null; showNote('Those two are already linked.'); refresh(); return; }
+    const end = x => ({ ax: x.ax, lo: x.lo, hi: x.hi, at: x.at });
+    const trial = [...state.eq, { a: end(pendingNum), b: end(m) }];
+    const res = solveLinks(trial);
     pendingNum = null;
     if (!res.ok) { showNote("Those can't be made equal with the layout as it is. Move or unlock something first.", 'warn', 6000); refresh(); return; }
     applySolution(res.prob, res.x);
     state.eq = trial;
+    tidyLayout();
+    reanchorLinks();
     transientNote = null; updateNote();
     commit();
     return;
   }
   if (groupOf.has(key)) { openNumberPopover(key, px, py); return; }
-  pendingNum = key;
+  pendingNum = { ...m, cell: cellId };
   refresh();
 }
 
@@ -1101,355 +1196,62 @@ function openNumberPopover(key, px, py) {
   $('#numpop-note').textContent = `This number stays equal to ${others} other ${others === 1 ? 'number' : 'numbers'}.`;
   placePopover($('#numpop'), px, py);
 }
-$('#numpop-link').addEventListener('click', () => { const k = numberKey; closePopover(); pendingNum = k; refresh(); });
+$('#numpop-link').addEventListener('click', () => { const k = numberKey, m = canvas._nums && canvas._nums.get(k); closePopover(); if (m) { pendingNum = { ...m, cell: -1 }; refresh(); } });
 $('#numpop-unlock').addEventListener('click', () => {
   const key = numberKey;
   const { groups, groupOf } = eqGroups();
   const group = groups[groupOf.get(key)];
   const rest = group.filter(k => k !== key);
-  state.eq = state.eq.filter(({ a, b }) => !group.includes(a) && !group.includes(b));
-  for (let k = 0; k + 1 < rest.length; k++) state.eq.push({ a: rest[k], b: rest[k + 1] });     // the others stay linked together
+  const ends = new Map();
+  for (const { a, b } of state.eq) { ends.set(mkey(a), a); ends.set(mkey(b), b); }
+  state.eq = state.eq.filter(({ a, b }) => !group.includes(mkey(a)) && !group.includes(mkey(b)));
+  for (let k = 0; k + 1 < rest.length; k++) state.eq.push({ a: ends.get(rest[k]), b: ends.get(rest[k + 1]) });     // the others stay linked together
   closePopover();
   commit();
 });
 $('#numpop-close').addEventListener('click', () => closePopover());
 
-// After undo, redo or a change of drawer size, make sure the links still hold (or release them).
-function reconcileLinks(announce) {
-  if (!state.eq.length) return;
-  const res = solveLinks(state.eq);
-  if (res.ok) applySolution(res.prob, res.x);
-  else { state.eq = []; if (announce) showNote('The equal-size links could not be kept at this size, so they were released.', 'warn', 6000); }
-}
-
 /* ---------- delete a divider ---------- */
-// The two spaces either side of divider i. A divider can span several rows (or columns), so there is one pair per row.
-function pairsAcross(n, axis, i) {
-  const nc = n.colF.length, nr = n.rowF.length;
-  return axis === 'v'
-    ? Array.from({ length: nr }, (_, r) => [r * nc + i, r * nc + i + 1])
-    : Array.from({ length: nc }, (_, c) => [i * nc + c, (i + 1) * nc + c]);
-}
+const stripLine = ({ axis, pos, s, e }) => ({ axis, pos, s, e });
+function planWholeDelete(sid) { return rebuildWithout(currentLayout().lines.filter(l => l.id !== sid).map(stripLine)); }
+// Deleting an L takes out only its own two dividers; whatever else is in the space stays, and dividers that were left hanging are carried on
+function planEllDelete(j) { return rebuildWithout(currentLayout().lines.filter(l => l.id !== j.v && l.id !== j.h).map(stripLine)); }
 
-// True when both spaces beside the divider are undivided, so deleting simply merges them.
-function plainDelete(info) {
-  if (info.free) return false;
-  const n = findNode(state.root, info.nodeId);
-  if (!n) return false;
-  const pairs = info.piece !== null
-    ? [[n.kids[info.i].kids && n.kids[info.i].kids[info.piece], n.kids[info.i + 1].kids && n.kids[info.i + 1].kids[info.piece]]]
-    : pairsAcross(n, info.axis, info.i).map(([a, b]) => [n.kids[a], n.kids[b]]);
-  return pairs.every(([a, b]) => a && b && !a.kids && !b.kids);
-}
-
-// Why a divider cannot be deleted, or null when it can. Dividers that ended on it are extended (see below).
-function deleteBlocker(info) {
-  if (info.chord) return null;                       // a divider across an L-shaped space just joins the two spaces
-  if (!findNode(state.root, info.nodeId)) return 'This divider is no longer there.';
-  if (plainDelete(info) || planExtendedDelete(info)) return null;
-  return 'Dividers end on this one, and they cannot be extended into a clean layout. Delete or move those dividers first.';
-}
-
-/* Deleting a divider that other dividers end on: those dividers would be left hanging, so each one is extended
- * until it reaches a wall or another divider. The layout is described as divider lines (position and extent),
- * the deleted line is taken out, the hanging ends are lengthened, and the grid tree is rebuilt from the lines.
- * Spaces whose rectangle did not change keep their ids (and so their equal-size links). */
-function mergeLines(segs) {
-  const out = [];
-  for (const axis of ['v', 'h']) {
-    const list = segs.filter(x => x.axis === axis).sort((a, b) => Math.round(a.pos / EPS) - Math.round(b.pos / EPS) || a.s - b.s);
-    let cur = null;
-    for (const x of list) {
-      if (cur && Math.abs(x.pos - cur.pos) < EPS && x.s <= cur.e + WALL + EPS) { cur.e = Math.max(cur.e, x.e); cur.ext = cur.ext || x.ext; }
-      else { if (cur) out.push(cur); cur = { ...x }; }
-    }
-    if (cur) out.push(cur);
-  }
-  return out;
-}
-
-// Two parallel dividers that run side by side with less than NARROW between them are one divider: the one that was
-// extended moves onto the other (two extended ones join on the longer). Dividers that ended on the moved one follow it.
-const NARROW = 0.2;
-function joinNarrow(lines) {
-  for (let pass = 0; pass < 100; pass++) {
-    let pair = null;
-    for (const a of lines) {
-      for (const b of lines) {
-        if (a === b || a.axis !== b.axis || !(a.ext || b.ext)) continue;
-        const d = Math.abs(a.pos - b.pos);
-        if (d > EPS && d < WALL + NARROW - EPS && Math.min(a.e, b.e) - Math.max(a.s, b.s) > EPS) { pair = [a, b]; break; }
-      }
-      if (pair) break;
-    }
-    if (!pair) return lines;
-    const [a, b] = pair;
-    const keep = a.ext !== b.ext ? (a.ext ? b : a) : (a.e - a.s >= b.e - b.s ? a : b);
-    const move = keep === a ? b : a, old = move.pos;
-    move.pos = keep.pos;
-    for (const x of lines) {
-      if (x.axis === move.axis || x.pos + WALL <= move.s + EPS || x.pos >= move.e - EPS) continue;
-      if (Math.abs(x.e - old) < EPS) x.e = keep.pos;
-      else if (Math.abs(x.s - (old + WALL)) < EPS) x.s = keep.pos + WALL;
-    }
-    lines = mergeLines(lines.filter(x => x.e - x.s > EPS));
-  }
-  return lines;
-}
-
-// A region whose dividers are an L (with dividers inside its pocket and/or across the L-shaped space): the L-shaped node, or null.
-function ellFromLines(R, lines) {
-  for (const V of lines.filter(l => l.axis === 'v')) for (const H of lines.filter(l => l.axis === 'h')) {
-    const top = Math.abs(V.s - R.y) < EPS, bottom = Math.abs(V.e - (R.y + R.h)) < EPS;
-    const left = Math.abs(H.s - R.x) < EPS, right = Math.abs(H.e - (R.x + R.w)) < EPS;
-    if (top === bottom || left === right) continue;
-    const meetsX = left ? Math.abs(H.e - V.pos) < EPS : Math.abs(H.s - (V.pos + WALL)) < EPS;
-    const meetsY = top ? Math.abs(V.e - (H.pos + WALL)) < EPS : Math.abs(V.s - H.pos) < EPS;
-    if (!meetsX || !meetsY) continue;
-    const pw = left ? V.pos - R.x : R.x + R.w - (V.pos + WALL), ph = top ? H.pos - R.y : R.y + R.h - (H.pos + WALL);
-    if (pw < EPS || ph < EPS || pw > R.w - WALL - EPS || ph > R.h - WALL - EPS) continue;
-    const pocket = { x: left ? R.x : R.x + R.w - pw, y: top ? R.y : R.y + R.h - ph, w: pw, h: ph };
-    // other dividers: lines that cross the L's own dividers are two pieces; each piece is in the pocket or runs across the L-shaped space
-    const others = [];
-    for (const l of lines) {
-      if (l === V || l === H) continue;
-      const arm = l.axis === 'v' ? H : V, a = arm.pos, b = arm.pos + WALL;
-      if (l.s < a - EPS && l.e > b + EPS) others.push({ ...l, e: a }, { ...l, s: b });
-      else others.push(l);
-    }
-    const inside = l => (l.axis === 'v'
-      ? l.pos >= pocket.x - EPS && l.pos + WALL <= pocket.x + pocket.w + EPS && l.s >= pocket.y - EPS && l.e <= pocket.y + pocket.h + EPS
-      : l.pos >= pocket.y - EPS && l.pos + WALL <= pocket.y + pocket.h + EPS && l.s >= pocket.x - EPS && l.e <= pocket.x + pocket.w + EPS);
-    const inPocket = others.filter(inside);
-    let chords = others.filter(l => !inside(l));
-    // collinear dividers that were merged across a divider between them are separate dividers
-    for (let guard = 0; guard < 50; guard++) {
-      const hit = chords.find(l => chords.some(q => q.axis !== l.axis && l.s < q.pos - EPS && l.e > q.pos + WALL + EPS && q.s <= l.pos + WALL / 2 && q.e >= l.pos + WALL / 2));
-      if (!hit) break;
-      const q = chords.find(q => q.axis !== hit.axis && hit.s < q.pos - EPS && hit.e > q.pos + WALL + EPS && q.s <= hit.pos + WALL / 2 && q.e >= hit.pos + WALL / 2);
-      chords = chords.filter(c => c !== hit).concat([{ ...hit, e: q.pos }, { ...hit, s: q.pos + WALL }]);
-    }
-    // the order they were added in: a divider that ends against another was added after it
-    const blockers = c => chords.filter(q => q.axis !== c.axis && q.s <= c.pos + WALL / 2 + EPS && q.e >= c.pos + WALL / 2 - EPS && (Math.abs(c.e - q.pos) < EPS || Math.abs(c.s - (q.pos + WALL)) < EPS));
-    const rank = new Map(), pending = new Set(chords);
-    for (let guard = 0; pending.size && guard < 100; guard++) {
-      const ready = [...pending].filter(c => blockers(c).every(q => rank.has(q)));
-      if (!ready.length) break;
-      for (const c of ready) { rank.set(c, rank.size + 1); pending.delete(c); }
-    }
-    if (pending.size) continue;
-    const e = { corner: (top ? 't' : 'b') + (left ? 'l' : 'r'), fx: pw / (R.w - WALL), fy: ph / (R.h - WALL), cx: [], ax: [], ox: [], cy: [], ay: [], oy: [], seq: chords.length };
-    for (const c of chords) {
-      const mid = (c.s + c.e) / 2;
-      if (c.axis === 'v') { e.cx.push((c.pos - R.x) / (R.w - WALL)); e.ax.push((mid - R.y) / R.h); e.ox.push(rank.get(c)); }
-      else { e.cy.push((c.pos - R.y) / (R.h - WALL)); e.ay.push((mid - R.x) / R.w); e.oy.push(rank.get(c)); }
-    }
-    const g = ellGeom(e, R.x, R.y, R.w, R.h);          // each of those must be exactly the divider the L-shaped space would have there
-    const ok = chords.every(l => g.chords.some(c => c.axis === l.axis && Math.abs((l.axis === 'v' ? c.x - l.pos : c.y - l.pos)) < EPS && Math.abs((l.axis === 'v' ? c.y : c.x) - l.s) < EPS && Math.abs((l.axis === 'v' ? c.y + c.h : c.x + c.w) - l.e) < EPS));
-    if (!ok || !ellValid({ ell: e }, R.w, R.h)) continue;
-    const kid = treeFromLines(pocket, inPocket);
-    if (!kid) continue;
-    return { _r: R, ell: e, kids: [kid, { _r: R }] };
-  }
-  return null;
-}
-
-// Rebuild the grid tree for rectangle R from divider lines that all lie inside it; null if they do not form a nested grid.
-function treeFromLines(R, segs) {
-  const lines = mergeLines(segs);
-  if (!lines.length) return { _r: R };
-  const spanOf = l => (l.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w]);
-  const full = lines.filter(l => { const [a, b] = spanOf(l); return Math.abs(l.s - a) < EPS && Math.abs(l.e - b) < EPS; });
-  const vs = full.filter(l => l.axis === 'v').map(l => l.pos).sort((a, b) => a - b);
-  const hs = full.filter(l => l.axis === 'h').map(l => l.pos).sort((a, b) => a - b);
-  if (!full.length) return ellFromLines(R, lines);
-  const cuts = (lo, hi, at) => { const out = []; let p = lo; for (const q of at) { out.push([p, q]); p = q + WALL; } out.push([p, hi]); return out; };
-  const cols = cuts(R.x, R.x + R.w, vs), rows = cuts(R.y, R.y + R.h, hs);
-  if ([...cols, ...rows].some(([a, b]) => b - a < EPS)) return null;
-  const aw = R.w - (cols.length - 1) * WALL, ah = R.h - (rows.length - 1) * WALL;
-  const rest = lines.filter(l => !full.includes(l));
-  const kids = [];
-  for (const [y0, y1] of rows) for (const [x0, x1] of cols) {
-    const C = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, inside = [];
-    for (const l of rest) {
-      const lo = l.axis === 'v' ? C.x : C.y, hi = lo + (l.axis === 'v' ? C.w : C.h);
-      if (l.pos < lo - EPS || l.pos + WALL > hi + EPS) continue;
-      const s = Math.max(l.s, l.axis === 'v' ? C.y : C.x), e = Math.min(l.e, l.axis === 'v' ? C.y + C.h : C.x + C.w);
-      if (e - s > EPS) inside.push({ axis: l.axis, pos: l.pos, s, e });
-    }
-    const kid = treeFromLines(C, inside);
-    if (!kid) return null;
-    kids.push(kid);
-  }
-  return { _r: R, colF: cols.map(([a, b]) => (b - a) / aw), rowF: rows.map(([a, b]) => (b - a) / ah), kids };
-}
-
-const divSeg = d => (d.axis === 'v' ? { axis: 'v', pos: d.x, s: d.y, e: d.y + d.h } : { axis: 'h', pos: d.y, s: d.x, e: d.x + d.w });
-const wholeRect = () => { const { W, L } = drawerSize(); return { x: WALL, y: WALL, w: W - 2 * WALL, h: L - 2 * WALL }; };
-
-// A divider end that rests on nothing is carried on until it meets a wall or a divider that runs across its whole width.
-// An end rests when it is on a divider (or at a wall) that crosses the line.
-function extendHanging(R, lines) {
-  const touches = (g, q) => q.s <= g.pos + WALL + EPS && q.e >= g.pos - EPS;
-  const covers = (g, q) => q.s <= g.pos + EPS && q.e >= g.pos + WALL - EPS;
-  for (let pass = 0; pass < 6; pass++) {
-    let changed = false;
-    for (const g of lines) {
-      const [w0, w1] = g.axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
-      const perp = lines.filter(q => q.axis !== g.axis), on = (q, v) => v >= q.pos - EPS && v <= q.pos + WALL + EPS;
-      if (g.e < w1 - EPS && !perp.some(q => touches(g, q) && on(q, g.e))) {
-        g.e = Math.min(w1, ...perp.filter(q => covers(g, q) && q.pos >= g.e - EPS).map(q => q.pos)); g.ext = true; changed = true;
-      }
-      if (g.s > w0 + EPS && !perp.some(q => touches(g, q) && on(q, g.s))) {
-        g.s = Math.max(w0, ...perp.filter(q => covers(g, q) && q.pos + WALL <= g.s + EPS).map(q => q.pos + WALL)); g.ext = true; changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-}
-
-/* What a set of divider lines is kept as: the grid tree when it is one, otherwise the dividers themselves (see freeSegs).
- * { tree } or { free }, or null when the result is not a layout (an end resting on nothing, or a sliver of a space). */
-function finishLines(R, lines, cells) {
-  lines = joinNarrow(mergeLines(lines));
-  const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
-  const small = r => (r.w < MIN_CELL - EPS || r.h < MIN_CELL - EPS) && !cells.some(c => same(c, r));
-  const tree = treeFromLines(R, lines);
-  const tooSmall = t => (t.kids ? t.kids.some(tooSmall) : small(t._r));
-  if (tree && !tooSmall(tree)) return { tree };
-  if (!linesValid(R, lines)) return null;
-  const rects = lines.map(l => (l.axis === 'v' ? { x: l.pos, y: l.s, w: WALL, h: l.e - l.s } : { x: l.s, y: l.pos, w: l.e - l.s, h: WALL }));
-  if (regionFaces(R.x, R.y, R.w, R.h, rects).some(f => (f.rects || [f]).some(small))) return null;
-  const free = freeFromLines(R, lines);
-  return free ? { free } : null;
-}
-// The plan that the layout becomes with the divider lines `segs` left in it (hanging ends carried on), or null
-function rebuildWithout(segs) {
-  const R = wholeRect(), lines = mergeLines(segs);
-  extendHanging(R, lines);
-  return finishLines(R, lines, currentLayout().cells);
-}
-
-function planExtendedDelete(info) {
-  const n = findNode(state.root, info.nodeId);
-  if (!n) return null;
-  const { divs } = currentLayout();
-  const target = info.free ? divs.find(x => x.free && x.sid === info.sid) : divs.find(x => x.n === n && x.axis === info.axis && x.i === info.i);
-  if (!target) return null;
-  const line = divSeg(target), ax = line.axis;
-  const span = target.pieces && info.piece !== null ? target.pieces[info.piece] : [line.s, line.e];
-  const segs = divs.filter(d => d !== target).map(divSeg);
-  if (span[0] - line.s > EPS) segs.push({ axis: ax, pos: line.pos, s: line.s, e: span[0] });
-  if (line.e - span[1] > EPS) segs.push({ axis: ax, pos: line.pos, s: span[1], e: line.e });
-  return rebuildWithout(segs);
-}
-
+/* Deleting a divider that other dividers end on: those dividers would be left hanging, so each one is extended until it reaches
+ * a wall or another divider (two that end up closer than 0.2 in become one). */
 /* Deleting just part of a divider: a divider is cut into parts by the dividers that meet it. The part between two of them (or
  * between one and a wall) can be removed on its own; what is left may make a new L (a divider that ran past another now stops
  * at it). The clicked part is found from the click, and the rest of the layout is rebuilt as when a whole divider is deleted. */
 function dividerSegment(info, px, py) {
-  const { divs } = currentLayout();
-  const target = info.free ? divs.find(d => d.free && d.sid === info.sid)
-    : info.chord ? divs.find(d => d.ell === 'c' && d.n.id === info.nodeId && d.chord === info.chord.kind && d.i === info.chord.i)
-    : divs.find(d => d.n.id === info.nodeId && !d.ell && d.axis === info.axis && d.i === info.i);
-  if (!target) return null;
-  const t = divSeg(target), lines = mergeLines(divs.map(divSeg));
-  const line = lines.find(l => l.axis === t.axis && Math.abs(l.pos - t.pos) < EPS && l.s <= t.s + EPS && l.e >= t.e - EPS);
+  const { lines } = currentLayout(), line = lines.find(l => l.id === info.sid);
   if (!line) return null;
   const [ix, iy] = pointToDrawer(px, py), along = line.axis === 'v' ? iy : ix;
-  const bands = lines.filter(q => q.axis !== line.axis && q.s <= line.pos + WALL + EPS && q.e >= line.pos - EPS && q.pos >= line.s - EPS && q.pos + WALL <= line.e + EPS)
+  const bands = lines.filter(q => q.axis !== line.axis && q.s <= line.pos + WALL + EPS && q.e >= line.pos - EPS && q.pos > line.s + EPS && q.pos + WALL < line.e - EPS)       // dividers that meet it part way along (not the one it ends on)
     .map(q => [q.pos, q.pos + WALL]);
   if (bands.some(([a, b]) => along > a - EPS && along < b + EPS)) return null;           // on the joint itself
   const s = Math.max(line.s, ...bands.filter(([, b]) => b <= along).map(([, b]) => b)), e = Math.min(line.e, ...bands.filter(([a]) => a >= along).map(([a]) => a));
   if (e - s < EPS) return null;
-  return { axis: line.axis, pos: line.pos, s, e, whole: Math.abs(s - line.s) < EPS && Math.abs(e - line.e) < EPS };
+  return { id: line.id, axis: line.axis, pos: line.pos, s, e, whole: Math.abs(s - line.s) < EPS && Math.abs(e - line.e) < EPS };
 }
 function planPartDelete(seg) {
   const segs = [];
-  for (const d of currentLayout().divs.map(divSeg)) {
-    if (d.axis === seg.axis && Math.abs(d.pos - seg.pos) < EPS && d.s < seg.e - EPS && d.e > seg.s + EPS) {
+  for (const l of currentLayout().lines) {
+    const d = stripLine(l);
+    if (l.id === seg.id) {
       if (seg.s - d.s > EPS) segs.push({ ...d, e: seg.s });
       if (d.e - seg.e > EPS) segs.push({ ...d, s: seg.e });
     } else segs.push(d);
   }
   return rebuildWithout(segs);
 }
-// Deleting an L takes out only its own two dividers; whatever else is in the space stays, and dividers that were left hanging are carried on
-function planEllDelete(n) {
-  return rebuildWithout(currentLayout().divs.filter(d => !(d.n === n && (d.ell === 'v' || d.ell === 'h'))).map(divSeg));
-}
 
-function applyExtendedDelete(info) { return applyPlan(planExtendedDelete(info)); }
-// Make the plan (see finishLines) the layout. A layout kept as its dividers has no equal-size links.
-function applyPlan(plan) {
-  if (!plan) return false;
-  if (plan.tree) return applyTree(plan.tree);
-  const ids = [];
-  (function walk(nd) { ids.push(nd.id); if (nd.kids) nd.kids.forEach(walk); })(state.root);
-  const had = state.eq.length;
-  dropLinksFor(ids);
-  state.root = { id: nextId++, free: plan.free };
-  if (had) showNote('This layout is no longer a grid, so its equal-size links were released.', 'info', 6000);
-  return true;
+// Why a divider cannot be deleted, or null when it can
+function deleteBlocker(info) {
+  if (!currentLayout().lines.some(l => l.id === info.sid)) return 'This divider is no longer there.';
+  return planWholeDelete(info.sid) ? null : 'Deleting this divider would leave a space too thin to make.';
 }
-// A layout kept as its dividers that is a grid after all (an edit joined things up) goes back to being one
-function settleFree() {
-  if (!state.root.free) return;
-  const R = wholeRect(), lines = freeSegs(state.root, R).map(({ axis, pos, s, e }) => ({ axis, pos, s, e }));
-  const plan = finishLines(R, lines, currentLayout().cells);
-  if (plan && plan.tree) applyTree(plan.tree);
-}
-function applyTree(tree) {
-  if (!tree) return false;
-  const { regions } = currentLayout(), oldNodes = [];
-  (function walk(nd) { oldNodes.push(nd); if (nd.kids) nd.kids.forEach(walk); })(state.root);
-  const near = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < EPS);
-  const used = new Set();
-  const make = t => {
-    const m = oldNodes.find(o => !used.has(o.id) && !!o.kids === !!t.kids && near(regions.get(o.id), t._r));
-    if (m) used.add(m.id);
-    const node = { id: m ? m.id : nextId++ };
-    if (t.kids) { if (t.ell) node.ell = t.ell; else { node.colF = t.colF; node.rowF = t.rowF; } node.kids = t.kids.map(make); }
-    return node;
-  };
-  const root = make(tree);
-  dropLinksFor(oldNodes.filter(o => !used.has(o.id)).map(o => o.id));
-  state.root = root;
-  return true;
-}
-
-// Merge the spaces either side of divider i. Every other space keeps its size; the merged space also takes
-// the width of the divider that was removed.
-function mergeAcross(n, axis, i) {
-  const pairs = pairsAcross(n, axis, i);
-  if (!pairs.every(([a, b]) => !n.kids[a].kids && !n.kids[b].kids)) return false;
-  const d = currentLayout().divs.find(x => x.n === n && x.axis === axis && x.i === i);
-  const F = axis === 'v' ? n.colF : n.rowF;
-  const sizes = F.map(f => f * d.avail);
-  const merged = [...sizes.slice(0, i), sizes[i] + sizes[i + 1] + WALL, ...sizes.slice(i + 2)];
-  const avail = d.avail + WALL;
-  dropLinksFor(pairs.flatMap(([a, b]) => [n.kids[a].id, n.kids[b].id]));       // the merged space is a new size: release its links
-  const drop = new Set(pairs.map(([, b]) => b));
-  n.kids = n.kids.filter((_, idx) => !drop.has(idx));
-  const frac = merged.map(s => s / avail);
-  if (axis === 'v') n.colF = frac; else n.rowF = frac;
-  if (n.colF.length === 1 && n.rowF.length === 1) {       // nothing left to divide: this is a single space again
-    delete n.kids; delete n.colF; delete n.rowF;
-  }
-  return true;
-}
-
 function deleteDivider(info) {
-  if (info.chord) { deleteChord(info); return; }
-  if (info.free) { if (applyExtendedDelete(info)) { closePopover(); commit(); } return; }
-  let n = findNode(state.root, info.nodeId);
-  if (!n || deleteBlocker(info)) return;
-  if (!plainDelete(info)) {
-    if (applyExtendedDelete(info)) { closePopover(); commit(); }
-    return;
-  }
-  if (info.piece !== null) { transposeAt(n, info.axis); n = n.kids[info.piece]; }
-  if (!mergeAcross(n, info.axis, info.i)) return;
+  if (deleteBlocker(info) || !applyPlan(planWholeDelete(info.sid))) return;
   closePopover();
   commit();
 }
@@ -1477,15 +1279,19 @@ function openDividerPopover(info, px, py) {
   const seg = dividerSegment(info, px, py), part = $('#divpop-part');
   part.hidden = !(seg && !seg.whole);
   if (seg && !seg.whole) {
-    const tree = planPartDelete(seg);
-    partSeg = tree ? seg : null;
-    part.disabled = !tree;
-    part.title = tree ? 'Remove only the highlighted part of this divider' : 'Removing just that part would not leave a layout the planner can build';
+    const plan = planPartDelete(seg);
+    partSeg = plan ? seg : null;
+    part.disabled = !plan;
+    part.title = plan ? 'Remove only the highlighted part of this divider' : 'Removing just that part would leave a space too thin to make';
     setSegSel(seg);
   }
+  const ell = $('#divpop-ell');
+  ell.hidden = !info.joint;
   $('#divpop-delete').textContent = part.hidden ? 'Delete divider' : 'Delete the whole divider';
   $('#divpop-delete').disabled = !!blocker;
-  $('#divpop-delnote').textContent = blocker || (!$('#divpop-part').hidden ? ($('#divpop-part').disabled ? 'Deleting just the highlighted part would not leave a layout the planner can build. You can delete the whole divider.' : 'The highlighted part goes up to the next divider and the rest stays, which can make a new L. Or delete the whole divider.') : info.chord || plainDelete(info) ? 'Deleting merges the two spaces into one.' : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider (two that end up closer than 0.2″ become one).');
+  $('#divpop-delnote').textContent = blocker || (!part.hidden ? (part.disabled ? 'Deleting just the highlighted part would leave a space too thin to make. You can delete the whole divider.' : 'The highlighted part goes up to the next divider and the rest stays, which can make a new L. Or delete the whole divider.')
+    : info.joint ? 'This divider and the one it meets make an L. Delete just this divider, or the whole L. Dividers that ended on it are extended until they reach a wall or another divider.'
+    : 'Deleting merges the two spaces. Dividers that ended on it are extended until they reach a wall or another divider (two that end up closer than 0.2″ become one).');
   const pop = $('#divpop');
   pop.hidden = false;                                  // beside the click, not over the divider and the part that is highlighted
   const box = $('#stage').getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
@@ -1495,187 +1301,23 @@ function openDividerPopover(info, px, py) {
 }
 $('#divpop-delete').addEventListener('click', () => { if (dividerInfo) deleteDivider(dividerInfo); });
 $('#divpop-part').addEventListener('click', () => { if (partSeg && applyPlan(planPartDelete(partSeg))) { closePopover(); commit(); } });
+$('#divpop-ell').addEventListener('click', () => { if (dividerInfo && dividerInfo.joint) deleteEll(dividerInfo.joint); });
 $('#divpop-close').addEventListener('click', () => closePopover());
 
-
-/* ---------- dividers of a layout kept as its dividers ---------- */
-// Every divider end must still rest on the divider it was attached to, and the lines must be clear of each other
-function freeValid(node, R) {
-  const segs = freeSegs(node, R), byId = new Map(segs.map(g => [g.id, g]));
-  if (!linesValid(R, segs)) return false;
-  return node.free.segs.every(g => {
-    const me = byId.get(g.id);
-    return [g.a, g.b].every(sp => { const q = sp.r == null ? null : byId.get(sp.r); return !q || (q.s <= me.pos + WALL + EPS && q.e >= me.pos - EPS); });
-  });
-}
-function freeInfo(node, sid) {                            // for the divider panel: what is either side of it
-  const R = wholeRect(), segs = freeSegs(node, R), me = segs.find(g => g.id === sid);
-  let before = me.axis === 'v' ? R.x : R.y, after = me.axis === 'v' ? R.x + R.w : R.y + R.h;
-  for (const q of segs) {
-    if (q === me || q.axis !== me.axis || Math.min(q.e, me.e) - Math.max(q.s, me.s) <= EPS) continue;
-    if (q.pos + WALL <= me.pos + EPS) before = Math.max(before, q.pos + WALL); else if (q.pos >= me.pos + WALL - EPS) after = Math.min(after, q.pos);
-  }
-  return { free: true, nodeId: node.id, sid, axis: me.axis, piece: null, size: [me.pos - before, after - me.pos - WALL] };
-}
-function startFreeDrag(el, e) {
-  const node = state.root, sid = +el.dataset.free;
-  if (!node.free) return;
-  const R = wholeRect(), g = node.free.segs.find(q => q.id === sid);
-  if (!g) return;
-  const segs = freeSegs(node, R), me = segs.find(q => q.id === sid);
-  const cands = segs.filter(q => q !== me && q.axis === me.axis && Math.min(q.e, me.e) - Math.max(q.s, me.s) > -WALL - EPS).map(q => q.pos);
-  freeDrag = { sid, axis: g.axis, x0: e.clientX, y0: e.clientY, u0: g.u, pos0: me.pos, cands, R, before: snapshot(), moved: false, info: freeInfo(node, sid) };
-  canvas.setPointerCapture(e.pointerId);
-  e.preventDefault();
-}
-function moveFree(e) {
-  const d = freeDrag, node = state.root;
-  if (!node.free || !d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
-  d.moved = true;
-  const { s } = canvas._view, g = node.free.segs.find(q => q.id === d.sid), R = d.R, span = d.axis === 'v' ? R.w - WALL : R.h - WALL, lo = d.axis === 'v' ? R.x : R.y;
-  let pos = Math.round((d.pos0 + ((d.axis === 'v' ? e.clientX - d.x0 : e.clientY - d.y0) / s)) / SNAP) * SNAP;
-  const near = d.cands.reduce((best, c) => (Math.abs(c - pos) < Math.abs(best - pos) ? c : best), Infinity);
-  if (Math.abs(near - pos) < 8 / s) pos = near;
-  const target = clamp((pos - lo) / span, 0, 1), from = g.u;
-  settle(t => { g.u = from + (target - from) * t; }, () => freeValid(node, R));
-  renderDrawer(canvas, { interactive: true });
-}
-function endFree(e) {
-  const d = freeDrag;
-  freeDrag = null;
-  if (!d) return;
-  if (snapshot() !== d.before) { commit(); return; }
-  loadSnapshot(d.before); refresh();
-  if (!d.moved) openDividerPopover(d.info, e.clientX, e.clientY);          // a click: its sizes, and delete
-}
-
 /* ---------- L-shaped dividers ---------- */
-let ellDrag = null, chordDrag = null, ellNode = null, popoverFace = null, popoverRect = null;
-// The dividers of an L-shaped space as rectangles (the L's own two, and the rest), in the space's own coordinates
-function ellItems(n, w, h) {
-  const g = ellGeom(n.ell, 0, 0, w, h);
-  return [{ kind: 'x', i: -1, axis: 'v', x: g.v.x, y: g.v.y, w: g.v.w, h: g.v.h }, { kind: 'y', i: -1, axis: 'h', x: g.hz.x, y: g.hz.y, w: g.hz.w, h: g.hz.h }, ...g.chords];
-}
-// The nearest divider on each side that faces this one (they overlap along their length), or the side of the space:
-// the free offsets { before, after } around it, so its own offset may range between before + MIN_CELL and after - WALL - MIN_CELL
-function ellFacing(items, item, w, h) {
-  const lo = item.axis === 'v' ? item.x : item.y, tot = item.axis === 'v' ? w : h;
-  let before = 0, after = tot;
-  for (const q of items) {
-    if (q === item || q.axis !== item.axis) continue;
-    const along = item.axis === 'v' ? Math.min(item.y + item.h, q.y + q.h) - Math.max(item.y, q.y) : Math.min(item.x + item.w, q.x + q.w) - Math.max(item.x, q.x);
-    if (along <= EPS) continue;
-    const qo = q.axis === 'v' ? q.x : q.y;
-    if (qo + WALL <= lo + EPS) before = Math.max(before, qo + WALL); else if (qo >= lo + WALL - EPS) after = Math.min(after, qo);
-  }
-  return { before, after, lo, tot, range: [before + MIN_CELL, after - WALL - MIN_CELL] };
-}
-// Move to the new position if it is allowed, otherwise as far towards it as is
-function settle(set, valid) {
-  set(1);
-  if (valid()) return;
-  let lo = 0, hi = 1;
-  for (let k = 0; k < 12; k++) { const mid = (lo + hi) / 2; set(mid); if (valid()) lo = mid; else hi = mid; }
-  set(lo);
-}
-function startEllDrag(el, e) {
-  const n = findNode(state.root, +el.dataset.node);
-  if (!n || !n.ell) return;
-  const r = currentLayout().regions.get(n.id), left = n.ell.corner[1] === 'l', top = n.ell.corner[0] === 't';
-  const items = ellItems(n, r.w, r.h), fx = ellFacing(items, items[0], r.w, r.h), fy = ellFacing(items, items[1], r.w, r.h);
-  const along = { x: [], y: [] };                             // dividers exactly in line with the L's own go with it
-  items.forEach(c => { if (c.i >= 0 && Math.abs((c.axis === 'v' ? c.x : c.y) - (c.axis === 'v' ? fx.lo : fy.lo)) < EPS) along[c.kind].push(c.i); });
-  const lead = (f, tot, leading) => (leading ? f.range : [tot - WALL - f.range[1], tot - WALL - f.range[0]]);      // the range of the pocket's width (or length)
-  ellDrag = { id: n.id, mode: el.dataset.ell, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, pw0: n.ell.fx * (r.w - WALL), ph0: n.ell.fy * (r.h - WALL), rx: lead(fx, r.w, left), ry: lead(fy, r.h, top), along, moved: false };
-  canvas.setPointerCapture(e.pointerId);
-  e.preventDefault();
-}
-function moveEll(e) {
-  const d = ellDrag, n = findNode(state.root, d.id);
-  if (!n || !d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
-  d.moved = true;
-  const { s } = canvas._view, left = n.ell.corner[1] === 'l', top = n.ell.corner[0] === 't';
-  const dx = (e.clientX - d.x0) / s, dy = (e.clientY - d.y0) / s, snap = v => Math.round(v / SNAP) * SNAP;
-  const fit = (v, [lo, hi], tot) => clamp(snap(v), lo, Math.max(lo, hi)) / (tot - WALL);
-  const from = { fx: n.ell.fx, fy: n.ell.fy };
-  const to = { fx: d.mode !== 'h' ? fit(d.pw0 + (left ? dx : -dx), d.rx, d.w) : from.fx, fy: d.mode !== 'v' ? fit(d.ph0 + (top ? dy : -dy), d.ry, d.h) : from.fy };
-  const set = t => {
-    n.ell.fx = from.fx + (to.fx - from.fx) * t; n.ell.fy = from.fy + (to.fy - from.fy) * t;
-    const armOff = { x: left ? n.ell.fx * (d.w - WALL) : d.w - n.ell.fx * (d.w - WALL) - WALL, y: top ? n.ell.fy * (d.h - WALL) : d.h - n.ell.fy * (d.h - WALL) - WALL };
-    for (const i of d.along.x) n.ell.cx[i] = armOff.x / (d.w - WALL);
-    for (const i of d.along.y) n.ell.cy[i] = armOff.y / (d.h - WALL);
-  };
-  settle(set, () => ellValid(n, d.w, d.h));
-  if (state.eq.length) {                                  // linked sizes must still hold: otherwise stop where it last worked
-    const res = solveLinks(state.eq);
-    if (res.ok) applySolution(res.prob, res.x); else { n.ell.fx = from.fx; n.ell.fy = from.fy; set(0); }
-  }
-  renderDrawer(canvas, { interactive: true });
-}
-function endEll(e) {
-  const d = ellDrag;
-  ellDrag = null;
-  if (!d) return;
-  if (snapshot() !== d.before) { commit(); return; }
-  if (d.moved) { loadSnapshot(d.before); refresh(); return; }
-  openEllPopover(d.id, e.clientX, e.clientY);              // a click: its options
-}
-// A divider across an L-shaped space
-function chordInfo(n, kind, i, w, h) {
-  const items = ellItems(n, w, h), item = items.find(c => c.kind === kind && c.i === i), f = ellFacing(items, item, w, h);
-  return { items, item, f, tot: f.tot, off: f.lo, size: [f.lo - f.before, f.after - f.lo - WALL] };
-}
-function startChordDrag(el, e) {
-  const n = findNode(state.root, +el.dataset.node);
-  if (!n || !n.ell) return;
-  const kind = el.dataset.chord, i = +el.dataset.i, r = currentLayout().regions.get(n.id);
-  const ci = chordInfo(n, kind, i, r.w, r.h), armOff = kind === 'x' ? ci.items[0].x : ci.items[1].y;
-  if (Math.abs(ci.off - armOff) < EPS) { startEllDrag({ dataset: { node: n.id, ell: kind === 'x' ? 'v' : 'h' } }, e); return; }      // in line with the L's own divider: they move together
-  chordDrag = { id: n.id, kind, i, x0: e.clientX, y0: e.clientY, before: snapshot(), w: r.w, h: r.h, tot: ci.tot, off0: ci.off, lo: ci.f.range[0], hi: ci.f.range[1], moved: false,
-    info: { chord: { kind, i }, nodeId: n.id, axis: kind === 'x' ? 'v' : 'h', piece: null, size: ci.size } };
-  canvas.setPointerCapture(e.pointerId);
-  e.preventDefault();
-}
-function moveChord(e) {
-  const d = chordDrag, n = findNode(state.root, d.id);
-  if (!n || !d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
-  d.moved = true;
-  const { s } = canvas._view, delta = (d.kind === 'x' ? e.clientX - d.x0 : e.clientY - d.y0) / s, key = d.kind === 'x' ? 'cx' : 'cy';
-  const from = n.ell[key][d.i], to = clamp(Math.round((d.off0 + delta) / SNAP) * SNAP, d.lo, Math.max(d.lo, d.hi)) / (d.tot - WALL);
-  settle(t => { n.ell[key][d.i] = from + (to - from) * t; }, () => ellValid(n, d.w, d.h));
-  renderDrawer(canvas, { interactive: true });
-}
-function endChord(e) {
-  const d = chordDrag;
-  chordDrag = null;
-  if (!d) return;
-  if (snapshot() !== d.before) { commit(); return; }
-  if (d.moved) { loadSnapshot(d.before); refresh(); return; }
-  openDividerPopover(d.info, e.clientX, e.clientY);        // a click: its sizes, and delete
-}
-function deleteChord(info) {
-  const n = findNode(state.root, info.nodeId);
-  if (!n || !n.ell) return;
-  ellRemoveChord(n.ell, info.chord.kind, info.chord.i);
+// An L is two dividers that end on each other. Its corner has a handle that moves both; each divider can also be moved alone.
+function openEllPopover(j, px, py) {
   closePopover();
-  commit();
-}
-const CORNERS = [['tl', 'top left'], ['tr', 'top right'], ['bl', 'bottom left'], ['br', 'bottom right']];
-function openEllPopover(id, px, py) {
-  const n = findNode(state.root, id);
-  if (!n || !n.ell) return;
-  closePopover();
-  ellNode = n;
-  const r = currentLayout().regions.get(n.id);
-  $('#ellpop-sizes').textContent = `Pocket ${fmt2(n.ell.fx * (r.w - WALL))}″ × ${fmt2(n.ell.fy * (r.h - WALL))}″`;
+  ellJoint = j;
   placePopover($('#ellpop'), px, py);
 }
-function deleteEll(n) {
-  if (!applyPlan(planEllDelete(n))) { showNote('Deleting that L would leave a sliver of a space, so it was kept.'); return; }
+let ellJoint = null;
+function deleteEll(j) {
+  if (!applyPlan(planEllDelete(j))) { showNote('Deleting that L would leave a space too thin to make, so it was kept.'); return; }
   closePopover();
   commit();
 }
-$('#ellpop-delete').addEventListener('click', () => { if (ellNode) deleteEll(ellNode); });
+$('#ellpop-delete').addEventListener('click', () => { if (ellJoint) deleteEll(ellJoint); });
 $('#ellpop-close').addEventListener('click', () => closePopover());
 
 /* ---------- split popover ---------- */
@@ -1683,20 +1325,20 @@ const SPLITS = [
   { nc: 2, nr: 1, label: '2 columns', icon: '<line x1="17" y1="2" x2="17" y2="22"/>' },
   { nc: 1, nr: 2, label: '2 rows', icon: '<line x1="2" y1="12" x2="32" y2="12"/>' },
 ];
+const CORNERS = [['tl', 'top left'], ['tr', 'top right'], ['bl', 'bottom left'], ['br', 'bottom right']];
 
 function openPopover(cellId, px, py) {
   const { cells } = currentLayout();
-  const cell = cells.find(c => c.n.id === cellId);
+  const cell = cells.find(c => c.id === cellId);
   if (!cell) return;
   $('#ellpop').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; dividerInfo = null; numberKey = null;
-  popoverCell = cell.n;
-  popoverFace = cell.n.face ? cell : null;
-  popoverRect = popoverFace ? (rectAtPoint(cell, px, py) || faceRects(cell)[0]) : null;       // inside an L-shaped space: the rectangle that was clicked
+  popoverCell = cell;
+  popoverRect = rectAtPoint(cell, px, py) || faceRects(cell)[0];       // inside a space that is not a rectangle: the rectangle that was clicked
   setSelected(cell.poly ? popoverRect : null);
   const grid = $('#pop-grid');
   grid.innerHTML = '';
   for (const sp of SPLITS) {
-    const ok = cell.n.face ? !!(cell.free ? freeSplit(popoverRect, sp) : faceSplit(cell, sp, popoverRect)) : (cell.w - (sp.nc - 1) * WALL) / sp.nc >= MIN_CELL && (cell.h - (sp.nr - 1) * WALL) / sp.nr >= MIN_CELL;
+    const ok = !!freeSplit(popoverRect, sp);
     const b = document.createElement('button');
     b.type = 'button';
     b.disabled = !ok;
@@ -1706,17 +1348,16 @@ function openPopover(cellId, px, py) {
     b.addEventListener('click', () => applySplit(sp));
     grid.appendChild(b);
   }
-  // inside an L-shaped (or other odd) space the corners that make sense are those of the clicked rectangle that the space itself closes off
-  const corners = cell.n.face ? CORNERS.filter(([c]) => faceEllPlan(cell, popoverRect, c)) : CORNERS;
-  const okL = cell.n.face ? corners.length > 0 : (cell.w - WALL) / 2 >= MIN_CELL && (cell.h - WALL) / 2 >= MIN_CELL;
+  // the corners that make sense are those of the clicked rectangle that the space itself closes off
+  const corners = CORNERS.filter(([c]) => faceEllPlan(cell, popoverRect, c));
   const bl = document.createElement('button');
-  bl.type = 'button'; bl.className = 'span2'; bl.disabled = !okL;
-  bl.title = okL ? 'Fence off a corner with an L-shaped divider' : cell.n.face ? 'No corner of this part of the space can be fenced off with an L' : 'This space is too small for an L-shape';
+  bl.type = 'button'; bl.className = 'span2'; bl.disabled = !corners.length;
+  bl.title = corners.length ? 'Fence off a corner with an L-shaped divider' : (cell.poly ? 'No corner of this part of the space can be fenced off with an L' : 'This space is too small for an L-shape');
   bl.setAttribute('aria-label', 'L-shape');
   bl.innerHTML = '<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><path d="M2 12h13v-10"/></svg><span>L-shape</span>';
   const rect = popoverRect;
   bl.addEventListener('click', () => {                                        // not added yet: first ask which corner the pocket goes in, unless only one makes sense
-    if (corners.length === 1) { if (cell.n.face) applyFaceEll(cell, rect, corners[0][0]); else applyEll(corners[0][0]); }
+    if (corners.length === 1) applyEll(cell, rect, corners[0][0]);
     else chooseEllCorner(cell, px, py, corners);
   });
   grid.appendChild(bl);
@@ -1740,31 +1381,21 @@ function chooseEllCorner(cell, px, py, list = CORNERS) {
     const b = document.createElement('button');
     b.type = 'button'; b.title = `Pocket in the ${name} corner`; b.setAttribute('aria-label', `Pocket in the ${name} corner`);
     b.innerHTML = `<svg viewBox="0 0 34 24" aria-hidden="true"><rect x="2" y="2" width="30" height="20"/><rect class="pocket" x="${c[1] === 'l' ? 2 : 17}" y="${c[0] === 't' ? 2 : 12}" width="15" height="10"/></svg><span>${name[0].toUpperCase() + name.slice(1)}</span>`;
-    b.addEventListener('click', () => (cell.n.face ? applyFaceEll(cell, rect, c) : applyEll(c)));
+    b.addEventListener('click', () => applyEll(cell, rect, c));
     grid.appendChild(b);
   }
   const back = document.createElement('button');
   back.type = 'button'; back.className = 'span2'; back.innerHTML = '<span>← Back</span>';
-  back.addEventListener('click', () => openPopover(cell.n.id, px, py));
+  back.addEventListener('click', () => openPopover(cell.id, px, py));
   grid.appendChild(back);
   $('#pop-title').textContent = 'Pocket in which corner?';
   placeDividePopover(px, py);
 }
-function closePopover() { if (subSel) setSelected(null); if (segSel) setSegSel(null); $('#ellpop').hidden = true; ellNode = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
+function closePopover() { if (subSel) setSelected(null); if (segSel) setSegSel(null); $('#ellpop').hidden = true; ellJoint = null; $('#popover').hidden = true; $('#divpop').hidden = true; $('#numpop').hidden = true; popoverCell = null; dividerInfo = null; numberKey = null; }
 
-function applyEll(corner) {                            // an L-shaped divider with its pocket in the chosen corner
-  const n = popoverCell;
-  if (!n) return;
-  const hadLinks = state.eq.some(({ a, b }) => numId(a) === n.id || numId(b) === n.id);
-  dropLinksFor([n.id]);
-  n.ell = { corner, fx: 0.5, fy: 0.5 };
-  n.kids = [newLeaf(), newLeaf()];
-  closePopover();
-  commit();
-  if (hadLinks) showNote('Adding the L released this space\'s equal-size links.', 'info');
-}
-/* An L-shaped space is dealt with as 3 rectangles: its two ends and the elbow where they meet. Only the one under the pointer
+/* An L-shaped space is dealt with as rectangles: for an L its two ends and the elbow where they meet. Only the one under the pointer
  * is highlighted, and a divider added from the menu goes through the middle of the one that was clicked. */
+let popoverRect = null;
 function faceRects(cell) {
   return cell.rects || [{ x: cell.x, y: cell.y, w: cell.w, h: cell.h }];
 }
@@ -1797,16 +1428,15 @@ function updateHover(e) {
   const hit = e.target.closest && e.target.closest('[data-cell]');
   let next = null;
   if (hit && canvas._cells) {
-    const c = canvas._cells.find(q => String(q.n.id) === hit.dataset.cell);
+    const c = canvas._cells.find(q => String(q.id) === hit.dataset.cell);
     if (c && c.poly) next = rectAtPoint(c, e.clientX, e.clientY);
   }
   if (!sameRect(next, subHover) || (!next && subHover)) { subHover = next; paintHover(); }
 }
 canvas.addEventListener('pointerleave', () => { if (subHover) { subHover = null; paintHover(); } });
 
-/* Dividers added inside a space that is not a plain rectangle (or in a layout kept as its dividers) are drawn from the middle of the
- * clicked rectangle outwards until they meet a wall or a divider; the layout is then put together again from all the lines. */
-const layoutLines = () => currentLayout().divs.map(divSeg);
+/* Dividers added inside a space are drawn from the middle of the clicked rectangle outwards until they meet a wall or a divider;
+ * the layout is then put together again from all the lines. So a divider added later stops against one added earlier. */
 // Where a divider of this axis, at `pos`, starting from `from` and running in direction `dir` (-1 or 1), stops: the first divider across its path, or the wall
 function reach(lines, R, axis, pos, from, dir) {
   const [w0, w1] = axis === 'v' ? [R.y, R.y + R.h] : [R.x, R.x + R.w];
@@ -1818,7 +1448,6 @@ function reach(lines, R, axis, pos, from, dir) {
   }
   return best;
 }
-const lineRect = l => (l.axis === 'v' ? { x: l.pos, y: l.s, w: WALL, h: l.e - l.s } : { x: l.s, y: l.pos, w: l.e - l.s, h: WALL });
 function freeSplit(rect, sp) {                           // the plan for 2 columns or 2 rows through the middle of the rectangle, or null
   const R = wholeRect(), lines = layoutLines(), add = [];
   if (sp.nc > 1) { const x = rect.x + rect.w / 2 - WALL / 2, yc = rect.y + rect.h / 2; add.push({ axis: 'v', pos: x, s: reach(lines, R, 'v', x, yc, -1), e: reach(lines, R, 'v', x, yc, 1) }); }
@@ -1840,52 +1469,19 @@ function faceEllPlan(cell, rect, corner) {
   const closed = regionFaces(R.x, R.y, R.w, R.h, all.map(lineRect)).some(f => !f.poly && sameRect(f, pocket));
   return closed ? finishLines(R, all, currentLayout().cells) : null;
 }
-function applyFaceEll(cell, rect, corner) {
+function applyEll(cell, rect, corner) {
   if (!applyPlan(faceEllPlan(cell, rect, corner))) { showNote('There is no room for an L there.'); return; }
   closePopover();
   commit();
 }
-
-// Dividers that split a space inside an L-shaped space evenly: the new fractions for the L's dividers, or null if they will not fit
-function faceSplit(cell, sp, rect) {
-  const n = cell.ell, r = currentLayout().regions.get(n.id), e = ellClone(n.ell);
-  const add = (kind, lo, size, tot, anchor) => {                       // one divider, through the middle of the chosen rectangle
-    const arm = ellBands({ ell: e }, r.w, r.h, kind).find(b => b.chord === -1).off;
-    let off = lo + size / 2 - WALL / 2;
-    if (Math.abs(off - arm) < 0.25) off = arm;                         // close to the L's own divider: carry it on instead
-    ellAddChord(e, kind, off / (tot - WALL), anchor);
-  };
-  if (sp.nc > 1) add('x', rect.x - r.x, rect.w, r.w, (rect.y + rect.h / 2 - r.y) / r.h);
-  if (sp.nr > 1) add('y', rect.y - r.y, rect.h, r.h, (rect.x + rect.w / 2 - r.x) / r.w);
-  return ellValid({ ell: e }, r.w, r.h) ? e : null;
-}
 function applySplit(sp) {
-  const n = popoverCell;
-  if (!n) return;
-  if (n.face && popoverFace.free) {
-    if (!applyPlan(freeSplit(popoverRect, sp))) { showNote('There is no room to divide that space that way.'); return; }
-    closePopover();
-    commit();
-    return;
-  }
-  if (n.face) {
-    const e = faceSplit(popoverFace, sp, popoverRect);
-    if (!e) { showNote('There is no room to divide that space that way.'); return; }
-    findNode(state.root, popoverFace.ell.id).ell = e;
-    closePopover();
-    commit();
-    return;
-  }
-  n.colF = Array(sp.nc).fill(1 / sp.nc);
-  n.rowF = Array(sp.nr).fill(1 / sp.nr);
-  const hadLinks = state.eq.some(({ a, b }) => numId(a) === n.id || numId(b) === n.id);
-  dropLinksFor([n.id]);
-  n.kids = Array.from({ length: sp.nc * sp.nr }, newLeaf);
+  if (!popoverCell) return;
+  if (!applyPlan(freeSplit(popoverRect, sp))) { showNote('There is no room to divide that space that way.'); return; }
   closePopover();
   commit();
-  if (hadLinks) showNote('Dividing this space released its equal-size links.', 'info');
 }
 $('#pop-cancel').addEventListener('click', closePopover);
+
 
 /* ---------- UI wiring ---------- */
 function refresh() {
@@ -2008,7 +1604,7 @@ $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
 $('#clear').addEventListener('click', () => {
   if (isDefaultLayout()) return;
-  state.root = newLeaf();
+  state.segs = [];
   state.eq = [];
   pendingNum = null;
   closePopover();
@@ -2591,3 +2187,4 @@ if (EMBED) {
   });
   window.parent.postMessage({ type: 'drawer-insert-ready' }, '*');
 }
+
