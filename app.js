@@ -1455,13 +1455,6 @@ function openPopover(cellId, px, py) {
     b.addEventListener('click', () => applySplit(sp));
     grid.appendChild(b);
   }
-  if (cell.n.face) {                                       // inside an L-shaped space: dividers run across it; the L itself has its own options
-    const be = document.createElement('button');
-    be.type = 'button'; be.className = 'span2'; be.title = 'Move the L, change its corner, or delete it';
-    be.innerHTML = '<span>Options for the L…</span>';
-    be.addEventListener('click', () => openEllPopover(cell.ell.id, px, py));
-    grid.appendChild(be);
-  }
   const okL = !cell.n.face && (cell.w - WALL) / 2 >= MIN_CELL && (cell.h - WALL) / 2 >= MIN_CELL;
   if (!cell.n.face) {
   const bl = document.createElement('button');
