@@ -2464,18 +2464,42 @@ const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2'].forEach((id, i) => { $(i
 function phError(msg) { const e = $('#ph-err'); e.textContent = msg || ''; e.hidden = !msg; }
 function openPhoto() {
   phs.file = null; phs.groups = []; if (phs.url) { URL.revokeObjectURL(phs.url); phs.url = null; }
-  $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false; $('#ph-go').disabled = true; $('#ph-file').value = '';
+  phPickId++; phHint(); $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false; $('#ph-go').disabled = true; $('#ph-file').value = '';
   $('#ph-note1').textContent = isEmbed() ? 'Your photo is used only to read what is in your drawer and is not kept. The layout will be made for the drawer size you entered.' : 'Your photo is used only to read what is in your drawer and is not kept. The drawer size is estimated from the photo, so you will be asked to measure it before ordering.';
   phError(''); phStage(0); $('#photo-modal').hidden = false; $('#ph-close').focus();
 }
 function closePhoto() { if (phs.ctl) phs.ctl.abort(); $('#photo-modal').hidden = true; }
-function phPick(file) {
+const isHeic = f => /hei[cf]/i.test(f.type) || /\.hei[cf]$/i.test(f.name);
+// A HEIC photo (what iPhones save) as a JPEG: the browser's own decoder if it has one (Safari does), else a decoder file loaded only now
+async function phHeicToJpeg(file) {
+  try {
+    const bmp = await createImageBitmap(file), c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height; c.getContext('2d').drawImage(bmp, 0, 0);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+    if (blob) return blob;
+  } catch (e) { /* this browser cannot read HEIC itself */ }
+  if (!window.heic2any) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'vendor/heic2any.min.js'; sc.onload = res; sc.onerror = rej; document.head.append(sc); });
+  const out = await window.heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+  return Array.isArray(out) ? out[0] : out;
+}
+let phPickId = 0;
+async function phPick(file) {
   phError('');
   if (!file) return;
-  if (!/^image\//.test(file.type) || /heic|heif/i.test(file.type)) { phError('Please use a JPEG or PNG photo. (If your phone saved it as HEIC, choose "Most Compatible" in its camera settings, or share the photo as a JPEG.)'); return; }
+  const id = ++phPickId, heic = isHeic(file);
+  if (!heic && !/^image\//.test(file.type)) { phError('Please use a JPEG or PNG photo.'); return; }
+  if (heic) {
+    phs.file = null; $('#ph-go').disabled = true; $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false;
+    $('#ph-drop-hint').innerHTML = '<b>Preparing your photo…</b><span>Converting it from HEIC. This can take a few seconds.</span>';
+    try { file = await phHeicToJpeg(file); }
+    catch (e) { if (id === phPickId) { phHint(); phError('That HEIC photo could not be opened. Please try a JPEG or PNG photo instead (on an iPhone, sharing the photo usually gives a JPEG).'); } return; }
+    if (id !== phPickId) return;                                // another photo was chosen meanwhile
+    phHint();
+  }
   phs.file = file; if (phs.url) URL.revokeObjectURL(phs.url); phs.url = URL.createObjectURL(file);
   $('#ph-preview').src = phs.url; $('#ph-preview').hidden = false; $('#ph-drop-hint').hidden = true; $('#ph-go').disabled = false;
 }
+const phHint = () => { $('#ph-drop-hint').innerHTML = '<b>Add a photo</b><span>Tap to choose or drop one here.<br>Best: from straight above, good light, things spread out.</span>'; };
 // The photo as a JPEG no larger than 1568 px on its longest side (also strips location and other hidden data), as base64
 async function phPrepare(file) {
   let bmp;
