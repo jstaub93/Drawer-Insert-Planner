@@ -2499,19 +2499,64 @@ function phClean(raw) {
   return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { quality: raw && raw.photo_quality, tip: sentence(raw && raw.photo_tip), basis: sentence(d.basis), conf: String(d.confidence || '') } };
 }
 const PH_ERRORS = { 413: 'That photo is too large. Try a smaller one.', 415: 'That kind of file cannot be used. Try a JPEG or PNG photo.', 429: 'Too many photos have been sent just now. Please wait a few minutes and try again.' };
+// What the photo reader has written so far, as the items it has named: [{ name, count }] and the groups it has started
+function phSpot(text) {
+  const items = [], groups = [];
+  for (const m of text.matchAll(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"count"\s*:\s*(\d+)/g)) items.push({ name: cleanName(m[1].replace(/\\(.)/g, '$1')).trim(), count: Math.min(99, +m[2]) });
+  for (const m of text.matchAll(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"items"/g)) groups.push(cleanName(m[1].replace(/\\(.)/g, '$1')).trim());
+  return { items: items.filter(i => i.name), groups: groups.filter(Boolean), sized: /"basis"\s*:/.test(text), quality: /"photo_quality"\s*:/.test(text) };
+}
+// Show the items as they are spotted: a chip for each (the newest few), and what the reader is doing now
+function phShowSpotted(sp) {
+  const box = $('#ph-spotted'), SHOW = 12, from = Math.max(0, sp.items.length - SHOW);
+  box.innerHTML = '';
+  if (from) { const more = document.createElement('span'); more.className = 'ph-chip more'; more.textContent = `+${from} more`; box.append(more); }
+  sp.items.forEach((it, i) => {
+    if (i < from) return;
+    const c = document.createElement('span'); c.className = 'ph-chip' + (i >= phs.seen ? ' new' : ''); c.textContent = it.count > 1 ? `${it.name} ×${it.count}` : it.name;
+    box.append(c);
+  });
+  phs.seen = sp.items.length; box.hidden = !sp.items.length;
+}
 async function phGo() {
   phError(''); phStage(1); $('#ph-go').disabled = true;
   let status = 'Usually about 30 seconds.'; const t0 = Date.now();
   const paint = () => { $('#ph-busy-sub').textContent = `${status} ${Math.round((Date.now() - t0) / 1000)} seconds so far.`; };
   paint(); const tick = setInterval(paint, 1000);
-  phs.ctl = new AbortController();
+  phs.ctl = new AbortController(); phs.seen = 0; $('#ph-spotted').innerHTML = ''; $('#ph-spotted').hidden = true;
   try {
     status = 'Preparing the photo.'; paint();
     const image = await phPrepare(phs.file);
-    status = 'Reading the photo.'; paint();
+    status = 'Sending the photo.'; paint();
     const res = await fetch(photoApi(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, mime: 'image/jpeg' }), signal: phs.ctl.signal });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(data.error || 'failed'), { status: res.status });
+    let data;
+    if (!res.ok || !/ndjson/i.test(res.headers.get('Content-Type') || '')) {            // an error, or a reader that answers all at once
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(data.error || 'failed'), { status: res.status });
+    } else {                                                  // the answer arrives in pieces: show what is spotted along the way
+      status = 'Looking over the drawer.'; paint();
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = '', text = '', lastItems = 0;
+      const handle = line => {
+        let o; try { o = JSON.parse(line); } catch (e) { return; }
+        if (o.error) throw Object.assign(new Error(o.error), { status: 502 });
+        if (o.done) { data = o.result; return; }
+        if (typeof o.d !== 'string') return;
+        text += o.d;
+        const sp = phSpot(text);
+        if (sp.items.length !== lastItems) { lastItems = sp.items.length; phShowSpotted(sp); }
+        status = sp.items.length ? `Spotted ${sp.items.length} ${sp.items.length === 1 ? 'item' : 'items'} so far.` : sp.sized ? 'Judging the size of the drawer.' : 'Looking over the drawer.';
+        paint();
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) handle(line); }
+      }
+      if (buf.trim()) handle(buf.trim());
+      if (!data) throw Object.assign(new Error('incomplete'), { status: 502 });
+    }
     const r = phClean(data);
     if (!r.groups.length) { phStage(0); phError('No items could be made out in that photo. Try a brighter, closer shot from above, with things spread out.'); return; }
     phs.groups = r.groups; phs.size = r.size; phs.meta = r.meta;

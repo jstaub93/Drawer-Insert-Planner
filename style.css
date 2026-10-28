@@ -375,6 +375,13 @@ body.embed #finish { width: auto; margin: 0; padding: 13px 24px; font-size: 16px
 .ph-bar { height: 6px; background: var(--rule); border-radius: 3px; overflow: hidden; } .ph-bar i { display: block; width: 40%; height: 100%; background: var(--accent); animation: phslide 1.4s ease-in-out infinite; }
 @keyframes phslide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .ph-bar i { animation: none; width: 100%; } }
+.ph-spotted { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.ph-spotted[hidden] { display: none; }
+.ph-chip { padding: 3px 10px; border: 1px solid var(--rule); border-radius: 999px; background: #fff; font-size: 13px; color: var(--ink); max-width: 100%; overflow-wrap: anywhere; }
+.ph-chip.more { color: var(--ink-2); background: transparent; border-style: dashed; }
+.ph-chip.new { animation: phchip 0.5s ease-out; }
+@keyframes phchip { 0% { opacity: 0; transform: translateY(5px) scale(0.92); background: var(--accent); color: #fff; } 100% { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ph-chip.new { animation: none; } }
 .ph-err { margin: 12px 0 0; padding: 9px 12px; border-radius: 6px; background: #fdeeec; border: 1px solid #e8b9b4; color: var(--danger); font-size: 14px; }
 .ph-err[hidden] { display: none; }
 .ph-thumb { max-width: 100%; max-height: 240px; border-radius: 6px; border: 1px solid var(--rule); display: block; }
