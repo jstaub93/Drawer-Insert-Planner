@@ -2352,7 +2352,7 @@ on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
  * compartment). Everything after that is plain code: the groups are given floor area in proportion to what they hold and cut
  * into dividers by the same layout engine as the rest of the planner, and each space is named after its group. */
 const isEmbed = () => new URLSearchParams(location.search).has('embed') && window.parent !== window;       // inside the store's order form (see below)
-const PHOTO_API_URL = '';                           // set to the address of the deployed photo-reader service; the button stays hidden while it is empty
+const PHOTO_API_URL = 'https://drawer-photo-reader.stauberjustin.workers.dev';                           // set to the address of the deployed photo-reader service; the button stays hidden while it is empty
 function photoApi() {
   if (['localhost', '127.0.0.1'].includes(location.hostname)) { const q = new URLSearchParams(location.search).get('photoapi'); if (q) return q; }       // for testing against a local stand-in
   return PHOTO_API_URL;
