@@ -2489,13 +2489,14 @@ async function phPrepare(file) {
   if (!blob) throw new Error('encode');
   return await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
 }
+const sentence = (v, max = 220) => String(v == null ? '' : v).replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);      // a sentence of the photo reader's, cut only if very long
 function phClean(raw) {
   const d = (raw && raw.drawer) || {}, num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
   const groups = (Array.isArray(raw && raw.groups) ? raw.groups : []).slice(0, 10).map(g => ({
     name: cleanName(g.name || 'Space').trim() || 'Space', on: true,
     items: (Array.isArray(g.items) ? g.items : []).slice(0, 20).map(i => ({ name: cleanName(i.name || 'item').trim() || 'item', count: clamp(Math.round(num(i.count) || 1), 1, 99), length_in: clamp(num(i.length_in) || 3, 0.2, 40), width_in: clamp(num(i.width_in) || 1, 0.1, 30) })),
   })).filter(g => g.items.length);
-  return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { quality: raw && raw.photo_quality, tip: cleanLabel((raw && raw.photo_tip) || ''), basis: cleanLabel(d.basis || ''), conf: String(d.confidence || '') } };
+  return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { quality: raw && raw.photo_quality, tip: sentence(raw && raw.photo_tip), basis: sentence(d.basis), conf: String(d.confidence || '') } };
 }
 const PH_ERRORS = { 413: 'That photo is too large. Try a smaller one.', 415: 'That kind of file cannot be used. Try a JPEG or PNG photo.', 429: 'Too many photos have been sent just now. Please wait a few minutes and try again.' };
 async function phGo() {
