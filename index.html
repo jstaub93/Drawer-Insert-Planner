@@ -26,6 +26,12 @@
 <main class="bench">
   <aside class="rail" aria-label="Drawer settings and estimate">
 
+    <section class="card photo-card" id="photo-card" aria-labelledby="h-photo" hidden>
+      <h2 id="h-photo">Start from a photo</h2>
+      <p class="note">Not sure where to begin? Take a picture of your cluttered drawer and we will suggest a layout, with a space for each kind of thing.</p>
+      <button type="button" class="btn primary" id="photo-open">Suggest Layout from Photo</button>
+    </section>
+
     <section class="card" aria-labelledby="h-size">
       <h2 id="h-size">Drawer interior</h2>
       <p class="note">Measure inside the drawer box, in inches. Select a safety gap. Then, check the final insert dimensions.</p>
@@ -88,6 +94,7 @@
         <li>To make a size an exact number, select it and choose <b>Set to a specific number</b> in the bar at the top of the editor, then pick a size from the list (or type one in decimal mode). It stays that size, even when you move dividers or resize the drawer, until you select it and remove it. If the size cannot be had, the planner says why.</li>
         <li>Select a divider (without dragging) to see its sizes or delete it and merge the two spaces. Where other dividers meet it you can also delete just the highlighted part, which can leave a new L. Dividers left hanging are carried on until they meet something.</li>
         <li>Choose <b>L-shape</b>, then pick the corner, to fence it off with two dividers that meet at a corner (an L). Drag either part of the L to move it, or the round handle at its corner to move both. Select an L to delete just that L. In an L-shaped space, click the part you want to divide (its two ends and the elbow light up as you point at them): the new divider goes through the middle of that part and runs on until it meets a wall or another divider. The L-shape button there offers only the corners that make sense.</li>
+        <li>Select a space and type a name under <b>Name this space</b> (for example "Scissors"). The name stays with the space and is printed on the plan. If the <b>Suggest Layout from Photo</b> button shows, you can add a photo of your cluttered drawer and get a first layout to adjust.</li>
         <li>Zoom in to design small compartments: use the + and − buttons, Ctrl/⌘ and scroll, or pinch. Drag the plan to move around it; Fit shows the whole drawer again.</li>
         <li>Undo and redo with the buttons or Ctrl/⌘+Z. Your plan is kept in this browser.</li>
       </ul>
@@ -116,6 +123,10 @@
         <button type="button" class="tool" id="expand" aria-pressed="false" title="Make the layout editor fill the whole window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span>Expand editor</span></button>
       </div>
     </div>
+    <div class="photo-banner" id="photo-banner" role="status" hidden>
+      <p><b>Suggested from your photo.</b> The drawer size is only an estimate. Measure the inside of your drawer, enter the real size under Drawer interior, and adjust the layout to suit.</p>
+      <button type="button" class="btn" id="photo-measured">I have measured my drawer</button>
+    </div>
     <div class="stage" id="stage">
       <div class="set-bar" id="set-bar" hidden>
         <div class="set-row">
@@ -139,6 +150,7 @@
       <svg id="canvas" role="img" aria-label="Plan of the drawer from above. Select a space to divide it."></svg>
       <div class="popover" id="popover" hidden role="dialog" aria-label="Divide this space">
         <div class="pop-title" id="pop-title">Divide this space</div>
+        <label class="pop-name" id="pop-namewrap"><span>Name this space</span><input type="text" id="pop-name" maxlength="28" placeholder="e.g. Scissors" autocomplete="off" spellcheck="false"></label>
         <div class="pop-grid" id="pop-grid"></div>
         <button type="button" class="pop-cancel" id="pop-cancel">Close</button>
       </div>
@@ -177,6 +189,59 @@
 </main>
 
 <footer class="foot">Prices shown match the store's order form. Sizes are in inches.</footer>
+
+<!-- Suggest layout from photo -->
+<div class="modal-backdrop" id="photo-modal" hidden>
+  <div class="modal ph-modal" role="dialog" aria-labelledby="ph-title">
+    <div class="modal-head">
+      <h2 id="ph-title">Layout from a photo</h2>
+      <button type="button" class="icon-btn" id="ph-close" aria-label="Close">×</button>
+    </div>
+    <div id="ph-s1">
+      <div class="ph-grid">
+        <div class="ph-drop" id="ph-drop">
+          <input type="file" id="ph-file" accept="image/jpeg,image/png,image/webp" aria-label="Choose a photo of your drawer">
+          <div class="ph-hint" id="ph-drop-hint"><b>Add a photo</b><span>Tap to choose or drop one here.<br>Best: from straight above, good light, things spread out.</span></div>
+          <img id="ph-preview" alt="Your photo" hidden>
+        </div>
+        <div class="ph-side">
+          <button type="button" class="btn primary" id="ph-go" disabled>Go</button>
+          <p class="ph-time"><b>Takes about 30 seconds.</b> You will come straight back to the planner with a suggested layout.</p>
+          <p class="note" id="ph-note1">Your photo is used only to read what is in your drawer and is not kept. The drawer size is estimated from the photo, so you will be asked to measure it before ordering.</p>
+        </div>
+      </div>
+    </div>
+    <div class="ph-busy" id="ph-busy" role="status" hidden>
+      <div class="ph-busy-head"><b>Looking at your drawer…</b><button type="button" class="btn" id="ph-stop">Stop</button></div>
+      <div class="ph-bar"><i></i></div>
+      <p class="note" id="ph-busy-sub">Usually about 30 seconds.</p>
+    </div>
+    <p class="ph-err" id="ph-err" role="alert" hidden></p>
+    <div id="ph-s2" hidden>
+      <div class="ph-grid">
+        <div><img id="ph-thumb" class="ph-thumb" alt="Your photo"><p class="note" id="ph-quality"></p></div>
+        <div class="ph-side">
+          <fieldset class="ph-size" id="ph-sizebox">
+            <legend>Drawer size, estimated</legend>
+            <div class="ph-dims">
+              <label><span>Width</span><input type="number" id="ph-w" inputmode="decimal" step="0.125"></label>
+              <label><span>Length</span><input type="number" id="ph-l" inputmode="decimal" step="0.125"></label>
+              <label><span>Height</span><input type="number" id="ph-h" inputmode="decimal" step="0.125"></label>
+            </div>
+            <p class="note" id="ph-basis"></p>
+          </fieldset>
+          <p class="ph-embed-size" id="ph-embed-size" hidden></p>
+          <p class="ph-warn" id="ph-warn"><b>Please measure your drawer.</b> A photo can only give a rough size. Type the real inside measurements here if you have them, or fix them in the planner before you order.</p>
+        </div>
+      </div>
+      <h3 class="ph-h3">Spaces to make</h3>
+      <p class="note">Each card becomes one space in your drawer. Rename it, remove things that should not be there, or switch a card off.</p>
+      <div class="ph-groups" id="ph-groups"></div>
+      <p class="ph-err" id="ph-build-err" role="alert" hidden></p>
+      <div class="ph-actions"><button type="button" class="btn" id="ph-back">Back</button><button type="button" class="btn primary" id="ph-build">Build my layout</button></div>
+    </div>
+  </div>
+</div>
 
 <!-- Plan sheet -->
 <div class="modal-backdrop" id="review" hidden>

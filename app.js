@@ -39,6 +39,9 @@ const state = {
   segs: [],                       // the dividers (see the layout section)
   eq: [],                         // linked equal sizes: [{ a: size, b: size }, ...] (see the links section)
   fix: [],                        // sizes set to a number: [{ ...size, value }, ...]
+  names: [],                      // names of spaces: [{ name, key, f }] (see the names section)
+  suggested: false,               // the layout was suggested from a photo
+  photo: false,                   // the layout was suggested from a photo and the drawer size has not been confirmed as measured
 };
 const hist = { stack: [], i: -1 };
 
@@ -49,6 +52,8 @@ function cleanLabel(v) {
     .replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').slice(0, LABEL_MAX);
 }
 const drawerLabel = () => cleanLabel(state.label).trim();
+const NAME_MAX = 28;
+const cleanName = v => cleanLabel(v).replace(/[<>"]/g, '').slice(0, NAME_MAX);      // a space's name: plain printable characters, as the PDF's built-in font has no others
 
 /* ---------- helpers ---------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -67,6 +72,7 @@ function fmtIn(n) {                                                      // a si
 }
 const fmtMoney = v => '$' + v.toFixed(2);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const svgEl = (tag, attrs = {}) => {
   const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -464,6 +470,61 @@ function faceMeasures(c, lines, R) {
 }
 const allMeasures = lay => lay.cells.flatMap(c => faceMeasures(c, lay.lines, lay.R));
 
+/* ---------- names of spaces ----------
+ * A space can be given a name. A name belongs to the space it was given to, which is found again after any edit: by the four
+ * dividers (or walls) around it (they keep their ids while they are only moved), and otherwise by where it was (the new space
+ * that overlaps it most, so when a space is divided its name stays with the larger part). Two names that end up on one space
+ * (a divider between them was deleted) keep the first. */
+const faceKey = (c, lay) => faceMeasures(c, lay.lines, lay.R).map(mkey).join('|');
+const largestRect = c => faceRects(c).reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
+const fracOf = (r, R) => [(r.x - R.x) / R.w, (r.y - R.y) / R.h, r.w / R.w, r.h / R.h];
+function nameEntryFor(c, lay) { const keys = faceKey(c, lay); return { key: keys, f: fracOf(largestRect(c), lay.R) }; }
+function findName(c, lay, byKey) {
+  const k = faceKey(c, lay);
+  if (k && byKey.has(k)) return byKey.get(k);
+  if (k) return null;
+  let best = null, bs = 0;                                         // a space of an odd shape has no key: the name whose place overlaps it most
+  for (const n of state.names) {
+    if (n.key) continue;
+    const o = { x: lay.R.x + n.f[0] * lay.R.w, y: lay.R.y + n.f[1] * lay.R.h, w: n.f[2] * lay.R.w, h: n.f[3] * lay.R.h };
+    const sc = faceRects(c).reduce((s, r) => s + Math.max(0, Math.min(o.x + o.w, r.x + r.w) - Math.max(o.x, r.x)) * Math.max(0, Math.min(o.y + o.h, r.y + r.h) - Math.max(o.y, r.y)), 0) / (o.w * o.h);
+    if (sc > bs) { bs = sc; best = n; }
+  }
+  return bs >= 0.35 ? best : null;
+}
+const nameLookup = () => new Map(state.names.filter(n => n.key).map(n => [n.key, n]));
+function remapNames() {
+  if (!state.names.length) return;
+  const lay = currentLayout(), faces = lay.cells.map(c => ({ c, key: faceKey(c, lay), rects: faceRects(c) })), taken = new Set(), out = [];
+  for (const n of state.names) {
+    let f = n.key ? faces.find(q => q.key === n.key && !taken.has(q.c.id)) : null;
+    if (!f) {
+      const o = { x: lay.R.x + n.f[0] * lay.R.w, y: lay.R.y + n.f[1] * lay.R.h, w: n.f[2] * lay.R.w, h: n.f[3] * lay.R.h };
+      let bs = 0;
+      for (const q of faces) {
+        if (taken.has(q.c.id)) continue;
+        const sc = q.rects.reduce((s, r) => s + Math.max(0, Math.min(o.x + o.w, r.x + r.w) - Math.max(o.x, r.x)) * Math.max(0, Math.min(o.y + o.h, r.y + r.h) - Math.max(o.y, r.y)), 0) / (o.w * o.h);
+        if (sc > bs) { bs = sc; f = q; }
+      }
+      if (bs < 0.35) f = null;
+    }
+    if (!f) continue;
+    taken.add(f.c.id);
+    out.push({ name: n.name, ...nameEntryFor(f.c, lay) });
+  }
+  state.names = out;
+}
+// Give the space (a cell of the current layout) a name; an empty name takes it away
+function setName(cell, text) {
+  const lay = currentLayout(), c = lay.cells.find(q => q.id === cell.id);
+  if (!c) return;
+  const key = faceKey(c, lay), old = findName(c, lay, nameLookup());
+  state.names = state.names.filter(n => n !== old);
+  const name = cleanName(text).trim();
+  if (name) state.names.push({ name, ...nameEntryFor(c, lay) });
+}
+const nameOf = (c, lay, byKey) => { const n = findName(c, lay, byKey || nameLookup()); return n ? n.name : ''; };
+
 // Gaps either side of a divider at one point along it: the space before it and after it
 function gapsAround(lines, R, g, t) {
   let before = g.axis === 'v' ? g.pos - R.x : g.pos - R.y, after = (g.axis === 'v' ? R.x + R.w : R.y + R.h) - g.pos - WALL;
@@ -531,15 +592,16 @@ function priceBreakdown() {
 const estimatePrice = () => priceBreakdown().total;
 
 /* ---------- history / persistence ---------- */
-const snapshot = () => JSON.stringify({ segs: state.segs, eq: state.eq, fix: state.fix });
+const snapshot = () => JSON.stringify({ segs: state.segs, eq: state.eq, fix: state.fix, names: state.names });
 function loadSnapshot(text) {
   const s = JSON.parse(text);
   state.segs = s.segs;
   state.eq = s.eq || [];
   state.fix = s.fix || [];
+  state.names = s.names || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq, fix: state.fix })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq, fix: state.fix, names: state.names, photo: state.photo, suggested: state.suggested })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
@@ -553,11 +615,11 @@ function restore() {
       state.decimal = !!saved.decimal || [state.drawer.w, state.drawer.l, state.drawer.h, state.gap].some(v => v % EIGHTH !== 0);
       state.label = cleanLabel(saved.label);
       const { W, L } = drawerSize();
-      state.fix = [];
-      if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; state.fix = Array.isArray(saved.fix) ? saved.fix : []; }
+      state.fix = []; state.names = []; state.photo = !!saved.photo; state.suggested = !!saved.suggested;
+      if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; state.fix = Array.isArray(saved.fix) ? saved.fix : []; state.names = Array.isArray(saved.names) ? saved.names.filter(n => n && typeof n.name === 'string').map(n => ({ ...n, name: cleanName(n.name) })) : []; }
       else if (saved.root && saved.root.free && Array.isArray(saved.root.free.segs)) { state.segs = saved.root.free.segs; state.eq = []; }
       else { const m = migrateTree(saved.root, saved.eq, W, L); state.segs = m.segs; state.eq = m.eq; }      // a layout saved as a tree of grids and L-shapes: now just its dividers
-      if (!segsValid(state.segs, wholeRect())) { state.segs = []; state.eq = []; state.fix = []; }        // a layout that cannot be made at this size: start empty
+      if (!segsValid(state.segs, wholeRect())) { state.segs = []; state.eq = []; state.fix = []; state.names = []; }        // a layout that cannot be made at this size: start empty
       nextId = state.segs.reduce((m, g) => Math.max(m, g.id), 0) + 1;
       return true;
     }
@@ -751,6 +813,7 @@ function applyPlan(plan, quiet) {
   if (!plan) return false;
   const had = state.eq.length + state.fix.length;
   state.segs = plan.segs;
+  remapNames();
   if (had) {
     const lay = currentLayout(), r = remapLinks(state.eq, plan.lineage, lay), f = remapFixed(state.fix, plan.lineage, lay);
     state.eq = r.eq; state.fix = f.fix;
@@ -839,7 +902,7 @@ function renderDrawer(svg, { interactive }) {
   svg._view = { ox, oy, s, fit, rcx, rcy, W, L };
   if (interactive) updateZoomUI();
 
-  const { cells, lines, R } = layoutOf(state.segs, W, L);
+  const lay = layoutOf(state.segs, W, L), { cells, lines, R } = lay, namesByKey = nameLookup();
   const out = [`<defs><marker id="leg-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="#0e7c72" stroke-width="1.4"/></marker></defs>`];
   const line = (x1, y1, x2, y2) => `<line class="dimline" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
   const slash = (x, y) => line(x - 4, y + 4, x + 4, y - 4);          // architectural end mark
@@ -880,15 +943,25 @@ function renderDrawer(svg, { interactive }) {
       + `<text class="cell-label" x="${x0}" y="${y}" font-size="${size}" dominant-baseline="central">${text}</text>`;
   };
   for (const c of cells) {
-    const ms = faceMeasures(c, lines, R);
+    const ms = faceMeasures(c, lines, R), nm = nameOf(c, lay, namesByKey);
+    const fit = (t, px, size) => (t.length * size * 0.62 <= px ? t : t.slice(0, Math.max(1, Math.floor(px / (size * 0.62)) - 1)) + '…');      // a name cut to the room there is
     if (!ms.length) {                                     // a space that is neither a rectangle nor an L: just a name, in its largest part
       const lg = c.rects.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
       const lx0 = Math.max(ox + lg.x * s, 0), lx1 = Math.min(ox + (lg.x + lg.w) * s, bw), ly0 = Math.max(oy + lg.y * s, 0), ly1 = Math.min(oy + (lg.y + lg.h) * s, bh);
       const fs = Math.min(14, (lx1 - lx0 - 6) / 5.2, (ly1 - ly0 - 6) / 1.4);
-      if (fs >= 6) out.push(`<text class="cell-label" x="${(lx0 + lx1) / 2}" y="${(ly0 + ly1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">Odd shape</text>`);
+      if (fs >= 6) out.push(`<text class="cell-label" x="${(lx0 + lx1) / 2}" y="${(ly0 + ly1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central">${esc(nm ? fit(nm, lx1 - lx0 - 6, fs) : 'Odd shape')}</text>`);
       continue;
     }
     if (c.poly) {                                         // an L: a number across each of its two legs, with an arrow showing what is measured
+      if (nm) {                                           // its name goes in the largest part, clear of the two arrows
+        const lg = largestRect(c), spots = ms.map(m => [ox + (m.arrow.x0 !== undefined ? (m.arrow.x0 + m.arrow.x1) / 2 : m.arrow.x) * s, oy + (m.arrow.y0 !== undefined ? (m.arrow.y0 + m.arrow.y1) / 2 : m.arrow.y) * s]);
+        let bx = 0, by = 0, bd = -1;
+        for (const fx of [0.25, 0.5, 0.75]) for (const fy of [0.25, 0.5, 0.75]) {
+          const px = ox + (lg.x + lg.w * fx) * s, py = oy + (lg.y + lg.h * fy) * s, d = Math.min(...spots.map(([sx, sy]) => Math.hypot(px - sx, (py - sy) * 1.3)));
+          if (d > bd) { bd = d; bx = px; by = py; }
+        }
+        if (bx > 0 && by > 0 && bx < bw && by < bh) out.push(`<text class="cell-label name-label" x="${bx}" y="${by}" font-size="14" text-anchor="middle" dominant-baseline="central">${esc(fit(nm, lg.w * s - 8, 14))}</text>`);
+      }
       for (const m of ms) {
         const across = m.kind === 'legx', a = m.arrow, text = fmt2(m.value) + '″';
         const [p0, p1] = across ? [ox + a.x0 * s, ox + a.x1 * s] : [oy + a.y0 * s, oy + a.y1 * s], at = across ? oy + a.y * s : ox + a.x * s;
@@ -914,6 +987,7 @@ function renderDrawer(svg, { interactive }) {
     const a = fmt2(ms[0].value) + '″', b = fmt2(ms[1].value) + '″';
     const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
     let fs = Math.min(16, (wpx - 12) / 8.6);
+    if (nm && hpx > 52 && wpx > 50) out.push(`<text class="cell-label name-label" x="${cx}" y="${cy - Math.max(fs, 12) * 1.5}" font-size="${Math.max(11, Math.min(15, fs))}" text-anchor="middle" dominant-baseline="central">${esc(fit(nm, wpx - 10, Math.max(11, Math.min(15, fs))))}</text>`);
     if (fs >= 10.5 && hpx > 24) {
       const cw = 0.6 * fs, wW = a.length * cw, wL = b.length * cw, gap = fs * 0.85, x0 = cx - (wW + 2 * gap + wL) / 2;
       out.push(numEl(ms[0], a, x0, cy, 'start', fs));
@@ -1461,6 +1535,7 @@ function openPopover(cellId, px, py) {
   popoverCell = cell;
   popoverRect = rectAtPoint(cell, px, py) || faceRects(cell)[0];       // inside a space that is not a rectangle: the rectangle that was clicked
   setSelected(cell.poly ? popoverRect : null);
+  $('#pop-namewrap').hidden = false; $('#pop-name').value = nameOf(cell, currentLayout());
   const grid = $('#pop-grid');
   grid.innerHTML = '';
   for (const sp of SPLITS) {
@@ -1502,6 +1577,7 @@ function placeDividePopover(px, py) {
 function chooseEllCorner(cell, px, py, list = CORNERS) {
   const grid = $('#pop-grid');
   grid.innerHTML = '';
+  $('#pop-namewrap').hidden = true;
   const rect = popoverRect;
   for (const [c, name] of list) {
     const b = document.createElement('button');
@@ -1607,6 +1683,9 @@ function applySplit(sp) {
   commit();
 }
 $('#pop-cancel').addEventListener('click', closePopover);
+$('#pop-name').addEventListener('input', e => { if (!popoverCell) return; setName(popoverCell, e.target.value); renderDrawer(canvas, { interactive: true }); });
+$('#pop-name').addEventListener('change', () => { if (popoverCell) { const cell = popoverCell; commit(); popoverCell = cell; } });
+$('#pop-name').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } e.stopPropagation(); });
 
 
 /* ---------- UI wiring ---------- */
@@ -1633,6 +1712,7 @@ function refresh() {
   $('#plan-status').textContent = `${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″ · ${cells.length} ${cells.length === 1 ? 'space' : 'spaces'}`;
   renderDrawer(canvas, { interactive: true });
   updateNote();
+  updatePhotoBanner();
 }
 
 // The select lists count eighths of an inch (value 97 = 12 1/8 in); the planner itself works in ten-thousandths.
@@ -1733,6 +1813,8 @@ $('#clear').addEventListener('click', () => {
   state.segs = [];
   state.eq = [];
   state.fix = [];
+  state.names = [];
+  state.photo = false; state.suggested = false;
   pendingNum = null;
   closePopover();
   commit();
@@ -1740,7 +1822,8 @@ $('#clear').addEventListener('click', () => {
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    if (!$('#review').hidden) $('#review').hidden = true;
+    if (!$('#photo-modal').hidden) closePhoto();
+    else if (!$('#review').hidden) $('#review').hidden = true;
     else if (pendingNum || transientNote) { pendingNum = null; transientNote = null; clearTimeout(noteTimer); refresh(); }
     else if (!$('#popover').hidden || !$('#divpop').hidden || !$('#numpop').hidden) closePopover();
     else if (document.body.classList.contains('editor-full')) setExpanded(false);
@@ -1787,7 +1870,7 @@ const sortCells = cells => [...cells].sort((a, b) => (Math.abs(a.y - b.y) > 0.5 
 // The SVG carries a physical width/height, so any viewer that honours it shows true scale.
 function drawing() {
   const { W, L } = drawerSize();
-  const lay = currentLayout(), { cells, divs } = lay;
+  const lay = currentLayout(), { cells, divs } = lay, byKey = nameLookup();
   const physical = physicalDividers(divs);
   const ratios = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48];
   const label = drawerLabel();
@@ -1818,6 +1901,7 @@ function drawing() {
     if (c.poly) PG(c.poly.map(([qx, qy]) => [ox + qx * k, oy + qy * k]), { fill: '#fff', stroke: '#111', sw: 0.25 });
     else R(x, y, w, h, { fill: '#fff', stroke: '#111', sw: 0.25 });
     let cx = x + w / 2, cy = y + h / 2;
+    const nm = nameOf(c, lay, byKey), fitName = (px, size) => { let t = nm; while (t.length > 1 && pdfWidth(t, size, true) > px) t = t.slice(0, -1); return t === nm ? t : t.slice(0, -1) + '.'; };
     if (c.poly) {                                                // a space that is not a rectangle: its letter goes in its largest part
       const lg = c.rects.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
       const lw = lg.w * k, lh = lg.h * k;
@@ -1833,6 +1917,7 @@ function drawing() {
       }
       if (lw >= 6 && lh >= 6) labels.push({ x: cx, y: cy + 1.5, s: labelFor(i), size: Math.min(4.6, lw * 0.6, lh * 0.6), bold: true });
       else callouts.push({ letter: labelFor(i), cx, cy });
+      if (nm && lw >= 14 && lh >= 11) labels.push({ x: cx, y: cy + 5.3, s: fitName(lw - 3, 2.8), size: 2.8, bold: true, fill: '#333' });
       for (const m of legs) {         // an L: how wide its upright leg is and how deep its flat leg is, with an arrow across each
         const across = m.kind === 'legx', a = m.arrow, text = fmt2(m.value);
         const tw = pdfWidth(text, 2.8, false), th = 2.8;
@@ -1848,7 +1933,9 @@ function drawing() {
       return;
     }
     const dims = `${fmt2(c.w)} × ${fmt2(c.h)}`, fit = Math.min(2.8, (w - 1.6) / pdfWidth(dims, 1, false));       // the sizes go in the space whenever they are legible there
-    if (w >= 21 && h >= 12) {
+    if (nm && w >= 18 && h >= 17) {
+      labels.push({ x: cx, y: cy - 3.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 0.9, s: fitName(w - 3, 3), size: 3, bold: true, fill: '#222' }, { x: cx, y: cy + 5, s: dims, size: Math.min(2.8, fit), fill: '#333' });
+    } else if (w >= 21 && h >= 12) {
       labels.push({ x: cx, y: cy - 0.6, s: labelFor(i), size: 4.6, bold: true }, { x: cx, y: cy + 4.2, s: dims, size: 2.8, fill: '#333' });
     } else if (fit >= 2 && h >= 10) {
       labels.push({ x: cx, y: cy - 0.4, s: labelFor(i), size: Math.min(4.2, w * 0.6, h * 0.35), bold: true }, { x: cx, y: cy + 3.3, s: dims, size: fit, fill: '#333' });
@@ -1950,18 +2037,18 @@ async function drawingPNG() {
 
 function designData() {
   const { W, L, H, partH } = drawerSize();
-  const { cells, divs } = currentLayout();
+  const lay = currentLayout(), { cells, divs } = lay, byKey = nameLookup();
   const sorted = sortCells(cells);
   const r = v => Math.round(v * 10000) / 10000;
   return {
-    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: unitsToIn(state.drawer.w), length: unitsToIn(state.drawer.l), height: unitsToIn(state.drawer.h) }, safety_gap_in: unitsToIn(state.gap), drawer_label: drawerLabel() },   // drawer.* below is the insert itself
+    metadata: { version: '2.0', units: 'inches', drawer_interior_in: { width: unitsToIn(state.drawer.w), length: unitsToIn(state.drawer.l), height: unitsToIn(state.drawer.h) }, safety_gap_in: unitsToIn(state.gap), drawer_label: drawerLabel(), ...(state.photo || state.suggested ? { suggested_from_photo: true, drawer_size_confirmed_measured: !state.photo } : {}) },   // drawer.* below is the insert itself
     drawer: { width_in: r(W), length_in: r(L), height_in: r(H), thickness_in: WALL, part_height_in: r(partH) },   // height_in is overall
     dividers: physicalDividers(divs).map((d, i) => ({
       id: `divider-${i}`, orientation: d.axis === 'v' ? 'vertical' : 'horizontal',
       x_in: r(d.axis === 'v' ? d.pos : d.start), y_in: r(d.axis === 'v' ? d.start : d.pos), length_in: r(d.length),
     })),
     compartments: sorted.map((c, i) => ({
-      label: labelFor(i), x_in: r(c.x), y_in: r(c.y), width_in: r(c.w), length_in: r(c.h),
+      label: labelFor(i), ...(nameOf(c, lay, byKey) ? { name: nameOf(c, lay, byKey) } : {}), x_in: r(c.x), y_in: r(c.y), width_in: r(c.w), length_in: r(c.h),
       ...(c.poly && !c.cut ? { shape: 'polygon', note: 'Not a rectangle: width and length are the overall size; outline_in is its outline, corner to corner', outline_in: c.poly.map(([qx, qy]) => [r(qx), r(qy)]) } : {}),
       ...(c.cut ? { shape: 'L', legs_in: (() => { const ms = faceMeasures(c, currentLayout().lines, currentLayout().R); return { upright_width: r(ms[0].value), flat_depth: r(ms[1].value) }; })(), note: 'L-shaped: width and length are the overall size; legs_in are how wide its upright leg is and how deep its flat leg is; the pocket cut out of it is cutout_in', cutout_in: { x: r(c.cut.x), y: r(c.cut.y), width: r(c.cut.w), length: r(c.cut.h) } } : {}),
     })),
@@ -2018,15 +2105,18 @@ function sheetData({ pdf = false } = {}) {
         ['Billable weight (the greater, rounded up)', `${pb.shipping.billable} lb`],
       ] },
       { title: 'Parts to cut', head: ['Qty', 'Part', 'Size'], right: [2], rows: cuts.map(c => [String(c.qty), c.part, `${inch(c.a)} × ${inch(c.b)}`]) }]),
-      { title: 'Spaces', head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.flatMap(c => [[c.shape ? `${c.label} (${c.shape === 'L' ? 'L-shaped' : 'odd shape'}, overall)` : c.label, inch(c.width_in), inch(c.length_in)],
-        ...(c.legs_in ? [[`${c.label} upright leg (how wide)`, inch(c.legs_in.upright_width), ''], [`${c.label} flat leg (how deep)`, '', inch(c.legs_in.flat_depth)]] : [])]) },
+      { title: 'Spaces', ...(data.compartments.some(c => c.name)
+        ? { head: ['Label', 'Name', 'Width', 'Length'], right: [2, 3], rows: data.compartments.flatMap(c => [[c.shape ? `${c.label} (${c.shape === 'L' ? 'L-shaped' : 'odd shape'}, overall)` : c.label, c.name || '', inch(c.width_in), inch(c.length_in)],
+          ...(c.legs_in ? [[`${c.label} upright leg (how wide)`, '', inch(c.legs_in.upright_width), ''], [`${c.label} flat leg (how deep)`, '', '', inch(c.legs_in.flat_depth)]] : [])]) }
+        : { head: ['Label', 'Width', 'Length'], right: [1, 2], rows: data.compartments.flatMap(c => [[c.shape ? `${c.label} (${c.shape === 'L' ? 'L-shaped' : 'odd shape'}, overall)` : c.label, inch(c.width_in), inch(c.length_in)],
+          ...(c.legs_in ? [[`${c.label} upright leg (how wide)`, inch(c.legs_in.upright_width), ''], [`${c.label} flat leg (how deep)`, '', inch(c.legs_in.flat_depth)]] : [])]) }) },
     ],
   };
 }
 
 function sectionHTML(s) {
   const head = s.head ? `<thead><tr>${s.head.map(h => `<th>${h}</th>`).join('')}</tr></thead>` : '';
-  const rows = s.rows.map((r, i) => `<tr${s.total && i === s.rows.length - 1 ? ' class="total"' : ''}>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('');
+  const rows = s.rows.map((r, i) => `<tr${s.total && i === s.rows.length - 1 ? ' class="total"' : ''}>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
   return `<h3>${s.title}</h3><table>${head}<tbody>${rows}</tbody></table>`;
 }
 
@@ -2128,7 +2218,7 @@ function pdfSheetPages(sections, subtitle) {
     if (first) { text(PDF_MARGIN, y + 16, subtitle, 10, { fill: '#555' }); y += 16; }
     y += 26;
   };
-  const colWidths = n => (n === 2 ? [0.7, 0.3] : [0.18, 0.5, 0.32]).map(f => f * (PDF_W - 2 * PDF_MARGIN));
+  const colWidths = n => (n === 2 ? [0.7, 0.3] : n === 4 ? [0.2, 0.4, 0.2, 0.2] : [0.18, 0.5, 0.32]).map(f => f * (PDF_W - 2 * PDF_MARGIN));
   const ROW = 19, LIMIT = PDF_H - 56;
   startPage(true);
   for (const s of sections) {
@@ -2256,6 +2346,244 @@ on('#rev-print', 'click', () => window.print());
 on('#rev-copy-json', 'click', e => copyText(jsonText(), e.currentTarget));
 on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
 
+/* ---------- layout from a photo ----------
+ * "Suggest Layout from Photo": the customer's photo is shrunk here and sent to a small service (worker/photo-reader.js) that
+ * asks Claude what is in the drawer. What comes back is a drawer size estimate and groups of things (each group = one
+ * compartment). Everything after that is plain code: the groups are given floor area in proportion to what they hold and cut
+ * into dividers by the same layout engine as the rest of the planner, and each space is named after its group. */
+const isEmbed = () => new URLSearchParams(location.search).has('embed') && window.parent !== window;       // inside the store's order form (see below)
+const PHOTO_API_URL = '';                           // set to the address of the deployed photo-reader service; the button stays hidden while it is empty
+function photoApi() {
+  if (['localhost', '127.0.0.1'].includes(location.hostname)) { const q = new URLSearchParams(location.search).get('photoapi'); if (q) return q; }       // for testing against a local stand-in
+  return PHOTO_API_URL;
+}
+
+// What each group needs: floor area (things stack and nest, so more of them need less than proportionally more) and its longest thing
+function photoPrep(groups) {
+  const gs = groups.filter(g => g.on !== false && g.items.length).map(g => ({
+    name: g.name || 'Space', items: g.items,
+    need: Math.max(9, g.items.reduce((s, i) => s + Math.pow(i.count, 0.75) * (i.length_in + 0.3) * (i.width_in + 0.2), 0)),
+    minLong: Math.max(...g.items.map(i => i.length_in)) + 0.3,
+  }));
+  gs.sort((a, b) => b.need - a.need);
+  while (gs.length > 8) {                                    // too many: the smallest ones share one space
+    const b = gs.pop(), a = gs.pop();
+    gs.push({ name: 'Small odds and ends', items: [...a.items, ...b.items], need: a.need + b.need, minLong: Math.max(a.minLong, b.minLong) });
+    gs.sort((x, y) => y.need - x.need);
+  }
+  return gs;
+}
+function photoScore(g, w, h) {                               // how badly a space of this size suits its group (0 = fine)
+  const long = Math.max(w, h), short = Math.min(w, h);
+  let s = 0;
+  if (long < g.minLong) s += (g.minLong - long) * 4;
+  if (short < 1) s += (1 - short) * 4;
+  const ratio = long / Math.max(short, 0.01); if (ratio > 5) s += (ratio - 5) * 0.3;
+  const r = (w * h) / g.need; if (r < 1) s += (1 - r) * 2;
+  return s;
+}
+// Cut the floor into one space per group by repeatedly dividing it in two where each side's area follows what the groups on it need
+function photoTreemap(gs, x, y, w, h) {
+  if (gs.length === 1) return { cells: [{ g: gs[0], x, y, w, h }], divs: [], score: photoScore(gs[0], w, h) };
+  let best = null;
+  for (let k = 1; k < gs.length; k++) {
+    const A = gs.slice(0, k), B = gs.slice(k), a = A.reduce((s, g) => s + g.need, 0), b = B.reduce((s, g) => s + g.need, 0);
+    for (const dir of ['v', 'h']) {
+      const avail = (dir === 'v' ? w : h) - WALL, s1 = Math.round(avail * a / (a + b) * 16) / 16, s2 = avail - s1;
+      if (s1 < 0.75 || s2 < 0.75) continue;
+      const r1 = dir === 'v' ? photoTreemap(A, x, y, s1, h) : photoTreemap(A, x, y, w, s1);
+      const r2 = dir === 'v' ? photoTreemap(B, x + s1 + WALL, y, s2, h) : photoTreemap(B, x, y + s1 + WALL, w, s2);
+      const score = r1.score + r2.score;
+      if (!best || score < best.score - 1e-9) best = { score, cells: [...r1.cells, ...r2.cells], divs: [...r1.divs, ...r2.divs, dir === 'v' ? { axis: 'v', pos: x + s1, s: y, e: y + h } : { axis: 'h', pos: y + s1, s: x, e: x + w }] };
+    }
+  }
+  return best || { cells: gs.map((g, i) => ({ g, x, y: y + i * (h / gs.length), w, h: h / gs.length })), divs: [], score: 99 };
+}
+// Full-length strips side by side (two rows when there are many), the longest things first
+function photoStrips(gs, W, H) {
+  const rowsOf = gs.length <= 4 ? [gs] : (() => { const half = gs.reduce((s, g) => s + g.need, 0) / 2; let acc = 0; const top = [], rest = []; gs.forEach(g => { if (acc < half && top.length < 4) { top.push(g); acc += g.need; } else rest.push(g); }); return [top, rest]; })();
+  const cells = [], divs = [], totals = rowsOf.map(r => r.reduce((s, g) => s + g.need, 0)), all = totals.reduce((s, v) => s + v, 0), availH = H - WALL * (rowsOf.length - 1);
+  let y = 0;
+  rowsOf.forEach((row, ri) => {
+    const rh = ri === rowsOf.length - 1 ? H - y : Math.round(availH * totals[ri] / all * 16) / 16, ordered = [...row].sort((a, b) => b.minLong - a.minLong), availW = W - WALL * (ordered.length - 1);
+    let x = 0;
+    ordered.forEach((g, i) => {
+      const cw = i === ordered.length - 1 ? W - x : Math.round(availW * g.need / totals[ri] * 16) / 16;
+      cells.push({ g, x, y, w: cw, h: rh });
+      if (i < ordered.length - 1) divs.push({ axis: 'v', pos: x + cw, s: y, e: y + rh });
+      x += cw + WALL;
+    });
+    if (ri < rowsOf.length - 1) divs.push({ axis: 'h', pos: y + rh, s: 0, e: W });
+    y += rh + WALL;
+  });
+  return { cells, divs };
+}
+// The dividers and names for the groups in the drawer's floor R: { plan, cells: [{ name, cx, cy }], variant, score } or null
+function suggestLayout(groups, R) {
+  let gs = photoPrep(groups);
+  while (gs.length) {
+    const tries = [{ variant: 'grid', r: photoTreemap(gs, 0, 0, R.w, R.h) }, { variant: 'strips', r: photoStrips(gs, R.w, R.h) }];
+    for (const t of tries) t.score = t.r.cells.reduce((s, c) => s + photoScore(c.g, c.w, c.h), 0) + (t.r.cells.length < gs.length || t.r.divs.length < gs.length - 1 || t.r.cells.some(c => Math.min(c.w, c.h) < 0.75) ? 99 : 0);
+    tries.sort((a, b) => a.score - b.score);
+    for (const t of tries) {
+      if (t.score >= 99 && gs.length > 1) continue;                       // too cramped to cut into that many spaces
+      const lines = t.r.divs.map(d => (d.axis === 'v' ? { axis: 'v', pos: R.x + d.pos, s: R.y + d.s, e: R.y + d.e } : { axis: 'h', pos: R.y + d.pos, s: R.x + d.s, e: R.x + d.e }));
+      const plan = finishLines(R, lines, [], []);
+      if (plan) return { plan, cells: t.r.cells.map(c => ({ name: c.g.name, cx: R.x + c.x + c.w / 2, cy: R.y + c.y + c.h / 2 })), variant: t.variant, score: t.score };
+    }
+    if (gs.length === 1) return null;
+    const b = gs.pop(), a = gs.pop();                                     // fewer, bigger spaces: the two smallest groups share one
+    gs.push({ name: 'Small odds and ends', items: [...a.items, ...b.items], need: a.need + b.need, minLong: Math.max(a.minLong, b.minLong) });
+    gs.sort((x, y) => y.need - x.need);
+  }
+  return null;
+}
+// Put the suggestion in the planner: the drawer size, the dividers and the names. False if no layout could be made.
+function applySuggestion(groups, size) {       // size: the drawer size to use, or null to keep the one in the planner (the order form's)
+  const lim = drawerLimits(), fit = (v, [lo, hi]) => clamp(snapEighth(Math.round(v * IN)), lo, hi);
+  const before = { drawer: { ...state.drawer }, dims: { ...state.dims } };
+  if (size) { state.drawer = { w: fit(size.w, lim.w), l: fit(size.l, lim.l), h: fit(size.h, lim.h) }; syncInsert(); }
+  const res = suggestLayout(groups, wholeRect());
+  if (!res) { state.drawer = before.drawer; syncInsert(); return false; }
+  state.segs = res.plan.segs; state.eq = []; state.fix = []; state.names = [];
+  const lay = currentLayout();
+  for (const c of res.cells) {
+    const face = lay.cells.find(f => faceRects(f).some(r => c.cx > r.x && c.cx < r.x + r.w && c.cy > r.y && c.cy < r.y + r.h));
+    if (face) setName(face, c.name);
+  }
+  state.photo = !!size; state.suggested = true;                // a size taken from the photo has to be confirmed as measured; one the customer entered does not
+  pendingNum = null; closePopover();
+  showSizes();
+  commit();
+  return true;
+}
+
+/* ---- the window ---- */
+const phs = { file: null, url: null, groups: [], size: { w: 18, l: 22, h: 3 }, meta: {}, ctl: null };
+const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2'].forEach((id, i) => { $(id).hidden = i !== n; }); };
+function phError(msg) { const e = $('#ph-err'); e.textContent = msg || ''; e.hidden = !msg; }
+function openPhoto() {
+  phs.file = null; phs.groups = []; if (phs.url) { URL.revokeObjectURL(phs.url); phs.url = null; }
+  $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false; $('#ph-go').disabled = true; $('#ph-file').value = '';
+  $('#ph-note1').textContent = isEmbed() ? 'Your photo is used only to read what is in your drawer and is not kept. The layout will be made for the drawer size you entered.' : 'Your photo is used only to read what is in your drawer and is not kept. The drawer size is estimated from the photo, so you will be asked to measure it before ordering.';
+  phError(''); phStage(0); $('#photo-modal').hidden = false; $('#ph-close').focus();
+}
+function closePhoto() { if (phs.ctl) phs.ctl.abort(); $('#photo-modal').hidden = true; }
+function phPick(file) {
+  phError('');
+  if (!file) return;
+  if (!/^image\//.test(file.type) || /heic|heif/i.test(file.type)) { phError('Please use a JPEG or PNG photo. (If your phone saved it as HEIC, choose "Most Compatible" in its camera settings, or share the photo as a JPEG.)'); return; }
+  phs.file = file; if (phs.url) URL.revokeObjectURL(phs.url); phs.url = URL.createObjectURL(file);
+  $('#ph-preview').src = phs.url; $('#ph-preview').hidden = false; $('#ph-drop-hint').hidden = true; $('#ph-go').disabled = false;
+}
+// The photo as a JPEG no larger than 1568 px on its longest side (also strips location and other hidden data), as base64
+async function phPrepare(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) { bmp = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = phs.url; }); }
+  const sw = bmp.width, sh = bmp.height, k = Math.min(1, 1568 / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+  if (!blob) throw new Error('encode');
+  return await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+}
+function phClean(raw) {
+  const d = (raw && raw.drawer) || {}, num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const groups = (Array.isArray(raw && raw.groups) ? raw.groups : []).slice(0, 10).map(g => ({
+    name: cleanName(g.name || 'Space').trim() || 'Space', on: true,
+    items: (Array.isArray(g.items) ? g.items : []).slice(0, 20).map(i => ({ name: cleanName(i.name || 'item').trim() || 'item', count: clamp(Math.round(num(i.count) || 1), 1, 99), length_in: clamp(num(i.length_in) || 3, 0.2, 40), width_in: clamp(num(i.width_in) || 1, 0.1, 30) })),
+  })).filter(g => g.items.length);
+  return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { quality: raw && raw.photo_quality, tip: cleanLabel((raw && raw.photo_tip) || ''), basis: cleanLabel(d.basis || ''), conf: String(d.confidence || '') } };
+}
+const PH_ERRORS = { 413: 'That photo is too large. Try a smaller one.', 415: 'That kind of file cannot be used. Try a JPEG or PNG photo.', 429: 'Too many photos have been sent just now. Please wait a few minutes and try again.' };
+async function phGo() {
+  phError(''); phStage(1); $('#ph-go').disabled = true;
+  let status = 'Usually about 30 seconds.'; const t0 = Date.now();
+  const paint = () => { $('#ph-busy-sub').textContent = `${status} ${Math.round((Date.now() - t0) / 1000)} seconds so far.`; };
+  paint(); const tick = setInterval(paint, 1000);
+  phs.ctl = new AbortController();
+  try {
+    status = 'Preparing the photo.'; paint();
+    const image = await phPrepare(phs.file);
+    status = 'Reading the photo.'; paint();
+    const res = await fetch(photoApi(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, mime: 'image/jpeg' }), signal: phs.ctl.signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || 'failed'), { status: res.status });
+    const r = phClean(data);
+    if (!r.groups.length) { phStage(0); phError('No items could be made out in that photo. Try a brighter, closer shot from above, with things spread out.'); return; }
+    phs.groups = r.groups; phs.size = r.size; phs.meta = r.meta;
+    phRenderResults(); phStage(2);
+  } catch (e) {
+    phStage(0);
+    if (e && e.name === 'AbortError') return;
+    phError(PH_ERRORS[e && e.status] || (e && e.status >= 500 ? 'The photo reader is busy or unavailable. Please try again in a moment.' : 'The photo could not be read. Check your connection and try again, or use a different photo.'));
+  } finally { clearInterval(tick); phs.ctl = null; $('#ph-go').disabled = !phs.file; }
+}
+function phRenderResults() {
+  $('#ph-thumb').src = phs.url || '';
+  $('#ph-quality').textContent = phs.meta.quality === 'good' ? 'The photo was clear enough to work from.' : 'The photo was not ideal. ' + (phs.meta.tip || 'A top-down shot with things spread out works best.');
+  const embed = isEmbed();
+  $('#ph-sizebox').hidden = embed; $('#ph-warn').hidden = embed; $('#ph-embed-size').hidden = !embed;
+  if (embed) {                                                // the drawer size comes from the order form: the photo's estimate is only a cross-check
+    $('#ph-embed-size').textContent = `Your drawer: ${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″ (the size you entered).`
+      + (Math.abs(phs.size.w / (state.dims.w / IN) - 1) > 0.2 || Math.abs(phs.size.l / (state.dims.l / IN) - 1) > 0.2 ? ` The photo looks like a drawer about ${fmt2(phs.size.w)}″ × ${fmt2(phs.size.l)}″, so please double-check your measurements.` : '');
+  }
+  for (const k of ['w', 'l', 'h']) $('#ph-' + k).value = phs.size[k];
+  $('#ph-basis').textContent = `${phs.meta.conf ? 'Confidence: ' + phs.meta.conf + '. ' : ''}${phs.meta.basis}`;
+  const box = $('#ph-groups'); box.innerHTML = '';
+  phs.groups.forEach(g => {
+    const card = document.createElement('div'); card.className = 'ph-group' + (g.on ? '' : ' off');
+    card.innerHTML = `<div class="ph-ghead"><input type="checkbox" ${g.on ? 'checked' : ''} aria-label="Include ${esc(g.name)}"><input type="text" class="ph-name" value="${esc(g.name)}" maxlength="${NAME_MAX}" aria-label="Name of this space"></div><ul class="ph-items"></ul>`;
+    const ul = card.querySelector('ul');
+    g.items.forEach((it, ii) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${it.count} × ${esc(it.name)}</span><span class="ph-sz">${it.length_in} × ${it.width_in} in <button type="button" class="ph-x" aria-label="Remove ${esc(it.name)}">×</button></span>`;
+      li.querySelector('.ph-x').addEventListener('click', () => { g.items.splice(ii, 1); if (!g.items.length) g.on = false; phRenderResults(); });
+      ul.appendChild(li);
+    });
+    card.querySelector('input[type=checkbox]').addEventListener('change', e => { g.on = e.target.checked; card.classList.toggle('off', !g.on); });
+    card.querySelector('input.ph-name').addEventListener('input', e => { g.name = cleanName(e.target.value); });
+    box.appendChild(card);
+  });
+}
+function phBuild() {
+  if (isEmbed()) {
+    if (!phs.groups.some(g => g.on && g.items.length)) { const e = $('#ph-build-err'); e.textContent = 'Switch on at least one space.'; e.hidden = false; return; }
+    if (!applySuggestion(phs.groups, null)) { const e = $('#ph-build-err'); e.textContent = 'A layout could not be made for those items in a drawer that size. Try switching off some spaces.'; e.hidden = false; return; }
+    closePhoto(); showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000); return;
+  }
+  const w = parseFloat($('#ph-w').value), l = parseFloat($('#ph-l').value), h = parseFloat($('#ph-h').value), lim = drawerLimits(), err = $('#ph-build-err');
+  err.hidden = true;
+  const bad = msg => { err.textContent = msg; err.hidden = false; };
+  if (!(w >= lim.w[0] / IN && w <= lim.w[1] / IN && l >= lim.l[0] / IN && l <= lim.l[1] / IN)) return bad(`The drawer must be between ${lim.w[0] / IN} and ${lim.w[1] / IN} inches wide and long (the planner makes inserts in that range).`);
+  if (!(h >= lim.h[0] / IN && h <= lim.h[1] / IN)) return bad(`The drawer height must be between ${lim.h[0] / IN} and ${lim.h[1] / IN} inches.`);
+  if (!phs.groups.some(g => g.on && g.items.length)) return bad('Switch on at least one space.');
+  if (!applySuggestion(phs.groups, { w, l, h })) return bad('A layout could not be made for those items in a drawer that size. Try switching off some spaces or check the size.');
+  closePhoto();
+  showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000);
+}
+function updatePhotoBanner() {
+  $('#photo-banner').hidden = !state.photo;
+  $('#photo-card').hidden = !photoApi();
+}
+{
+  const drop = $('#ph-drop');
+  on('#photo-open', 'click', openPhoto);
+  on('#ph-close', 'click', closePhoto);
+  on('#ph-back', 'click', () => phStage(0));
+  on('#ph-file', 'change', e => phPick(e.target.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => phPick(e.dataTransfer.files[0]));
+  on('#ph-go', 'click', phGo);
+  on('#ph-stop', 'click', () => { if (phs.ctl) phs.ctl.abort(); });
+  on('#ph-build', 'click', phBuild);
+  on('#photo-modal', 'click', e => { if (e.target.id === 'photo-modal' && $('#ph-s1').hidden === false) closePhoto(); });
+  on('#photo-measured', 'click', () => { state.photo = false; persist(); refresh(); });
+}
+
 /* ---------- init ---------- */
 if (!restore()) {                                                  // opens ready to work: an 18 x 22 x 3 in drawer
   state.gap = DEFAULT_GAP;
@@ -2279,6 +2607,7 @@ if (EMBED) {
     const w = size(m.dims.width, 5 * IN, 47 * IN), l = size(m.dims.length, 5 * IN, 47 * IN), h = size(m.dims.height, IN / 2, 15 * IN);
     if (![w, l, h].every(Number.isFinite)) return;
     state.drawer = { w: w + 2 * state.gap, l: l + 2 * state.gap, h: h + state.gap };
+    state.photo = false;                                                          // the order form's size is the customer's own, not a photo estimate
     if ([w, l, h].some(v => v % EIGHTH !== 0)) state.decimal = true;           // a size that is not a whole 1/8 in needs decimal input
     sizesChanged();
   });
@@ -2300,7 +2629,15 @@ if (EMBED) {
   ask.id = 'confirm-overlay'; ask.hidden = true;
   ask.innerHTML = '<div class="ov-card" role="alertdialog" aria-labelledby="ask-title"><div class="ov-title" id="ask-title">This layout is empty</div><div class="ov-sub">It has no dividers, so it will be built as a plain tray: a bottom and four walls. Use it anyway?</div><div class="ask-buttons"><button type="button" class="btn" id="ask-back">Keep designing</button><button type="button" class="btn primary" id="ask-yes">Yes, use an empty tray</button></div></div>';
   document.body.appendChild(ask);
+  // A layout suggested from a photo has only an estimated drawer size: it is confirmed as measured before the plan can be sent.
+  const measureAsk = document.createElement('div');
+  measureAsk.id = 'measure-overlay'; measureAsk.className = 'confirm-ov'; measureAsk.hidden = true;
+  measureAsk.innerHTML = '<div class="ov-card" role="alertdialog" aria-labelledby="meas-title"><div class="ov-title" id="meas-title">Did you measure your drawer?</div><div class="ov-sub">This layout was suggested from a photo, so the drawer size is only an estimate. Your insert is cut to the size shown, so please measure the inside of the drawer (side to side and front to back) and make sure the sizes under Drawer interior are right.</div><div class="ask-buttons"><button type="button" class="btn" id="meas-back">Go back and check</button><button type="button" class="btn primary" id="meas-yes">Yes, the sizes are measured</button></div></div>';
+  document.body.appendChild(measureAsk);
+  on('#meas-back', 'click', () => { measureAsk.hidden = true; });
+  on('#meas-yes', 'click', () => { measureAsk.hidden = true; state.photo = false; persist(); refresh(); $('#finish').click(); });
   on('#finish', 'click', () => {
+    if (state.photo) { measureAsk.hidden = false; $('#meas-back').focus(); return; }
     if (priceBreakdown().dividers) sendPlan(); else { ask.hidden = false; $('#ask-back').focus(); }
   });
   on('#ask-back', 'click', () => { ask.hidden = true; });
