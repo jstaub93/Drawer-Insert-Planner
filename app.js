@@ -14,7 +14,7 @@
 const MM_PER_IN = 25.4;           // only used to size the printed drawing in millimetres
 const OBD = new URLSearchParams(location.search).get('theme') === 'obd';      // Organizer By Design: its own sheet thickness, price and weight (see priceFor)
 let WALL = 0.17;                  // sheet thickness: outer wall and divider thickness (in); set from the insert height by drawerSize()
-const wallFor = H => (OBD ? (H > 3 + 1e-9 ? 0.375 : 0.25) : 0.17);       // OBD builds in 1/4 in sheet, and 3/8 in above 3 in tall
+const wallFor = H => (OBD ? state.thick || (H > 3 + 1e-9 ? 0.375 : 0.25) : 0.17);       // OBD builds in 1/4 in sheet, or 3/8 in: 3/8 above 3 in tall unless the customer chose
 const MIN_CELL = OBD ? 0.5 : 1 / 16;   // smallest compartment edge (in), wall to wall: Organizer By Design needs 1/2 in; otherwise no real limit, just enough that two dividers never sit on top of each other
 const MIN_TEXT = OBD ? '1/2″' : '1/16″';
 const SNAP = 1 / 16;              // drag snapping (in)
@@ -36,6 +36,7 @@ let nextId = 1;
 const state = {
   dims: null,                     // the insert: { w, l, h } in ten-thousandths of an inch (the drawer interior less the safety gap)
   drawer: null,                   // the drawer interior as measured: { w, l, h } in ten-thousandths of an inch
+  thick: null,                    // Organizer By Design: the sheet thickness the customer chose (0.25 or 0.375 in), or null to follow the height
   label: '',                      // the customer's drawer label (a few words, printed at the top of the PDF)
   gap: 0,                         // safety gap (same unit), off each side of the width and length and once off the height
   decimal: false,                 // sizes are typed as decimals instead of picked from fraction lists
@@ -611,7 +612,7 @@ function loadSnapshot(text) {
   state.names = s.names || [];
 }
 function persist() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, segs: state.segs, eq: state.eq, fix: state.fix, names: state.names, photo: state.photo, suggested: state.suggested })); } catch (e) { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ u: IN, decimal: state.decimal, dims: state.dims, drawer: state.drawer, gap: state.gap, label: state.label, thick: state.thick, segs: state.segs, eq: state.eq, fix: state.fix, names: state.names, photo: state.photo, suggested: state.suggested })); } catch (e) { /* storage unavailable */ }
 }
 function restore() {
   try {
@@ -625,6 +626,7 @@ function restore() {
       state.decimal = !!saved.decimal || [state.drawer.w, state.drawer.l, state.drawer.h, state.gap].some(v => v % EIGHTH !== 0);
       state.label = cleanLabel(saved.label);
       const { W, L } = drawerSize();
+      state.thick = OBD && (saved.thick === 0.25 || saved.thick === 0.375) ? saved.thick : null;
       state.fix = []; state.names = []; state.photo = !!saved.photo; state.suggested = !!saved.suggested;
       if (Array.isArray(saved.segs)) { state.segs = saved.segs; state.eq = Array.isArray(saved.eq) ? saved.eq : []; state.fix = Array.isArray(saved.fix) ? saved.fix : []; state.names = Array.isArray(saved.names) ? saved.names.filter(n => n && typeof n.name === 'string').map(n => ({ ...n, name: cleanName(n.name) })) : []; }
       else if (saved.root && saved.root.free && Array.isArray(saved.root.free.segs)) { state.segs = saved.root.free.segs; state.eq = []; }
@@ -1754,11 +1756,24 @@ function showSizes() {                                // the three drawer boxes,
   gap.hidden = dec; $('#dim-gap-dec').hidden = !dec;
   if (dec) $('#dim-gap-dec').value = fmtDecimal(state.gap); else gap.value = state.gap / EIGHTH;
   $('#drawer-label').value = state.label;
+  showThick();
   const d = state.dims;
   $('#insert-size').textContent = `${fmtIn(d.w)}″ × ${fmtIn(d.l)}″ × ${fmtIn(d.h)}″`;
 }
+// Organizer By Design: the customer picks the sheet thickness; thin sheet on a tall organizer gets a warning
+let thickAcked = false;                                  // the customer has seen the warning and kept 1/4 in
+const thinAndTall = () => { const { H } = drawerSize(); return OBD && H > 3 + 1e-9 && wallFor(H) < 0.375; };
+function showThick() {
+  $('#thick-card').hidden = !OBD;
+  if (!OBD) return;
+  const { H } = drawerSize();
+  $('#thick-sel').value = String(wallFor(H));
+  $('#thick-warn').hidden = !thinAndTall();
+}
+function chooseThick(t) { state.thick = t; thickAcked = false; sizesChanged(); }
 function sizesChanged() {
   pendingNum = null;
+  thickAcked = false;
   syncInsert();
   showSizes();
   reconcileLinks(true);                              // resizing the insert re-solves the equal-size links
@@ -1777,6 +1792,8 @@ $('#drawer-label').addEventListener('input', e => {
   persist();
 });
 $('#dim-gap').addEventListener('change', () => { state.gap = +$('#dim-gap').value * EIGHTH; sizesChanged(); });
+$('#thick-sel').addEventListener('change', e => chooseThick(+e.target.value));
+$('#thick-warn-use').addEventListener('click', () => chooseThick(0.375));
 
 // Decimal input: text boxes taking up to four decimal places, checked when the customer leaves the box or presses Enter.
 function cleanDecimalText(t) {
@@ -2718,8 +2735,15 @@ if (EMBED) {
   document.body.appendChild(measureAsk);
   on('#meas-back', 'click', () => { measureAsk.hidden = true; });
   on('#meas-yes', 'click', () => { measureAsk.hidden = true; state.photo = false; persist(); refresh(); $('#finish').click(); });
+  const thickAsk = document.createElement('div');
+  thickAsk.id = 'thick-overlay'; thickAsk.className = 'confirm-ov'; thickAsk.hidden = true;
+  thickAsk.innerHTML = '<div class="ov-card" role="alertdialog" aria-labelledby="thick-title"><div class="ov-title" id="thick-title">Thinner sheet on a tall organizer</div><div class="ov-sub">This organizer is taller than 3″ and is set to 1/4″ thick sheet. We recommend 3/8″ for taller organizers, for strength. It adds a little to the price.</div><div class="ask-buttons"><button type="button" class="btn primary" id="thick-use">Use 3/8″ thickness</button><button type="button" class="btn" id="thick-keep">Keep 1/4″</button></div></div>';
+  document.body.appendChild(thickAsk);
+  on('#thick-use', 'click', () => { thickAsk.hidden = true; chooseThick(0.375); });
+  on('#thick-keep', 'click', () => { thickAsk.hidden = true; thickAcked = true; $('#finish').click(); });
   on('#finish', 'click', () => {
     if (state.photo) { measureAsk.hidden = false; $('#meas-back').focus(); return; }
+    if (thinAndTall() && !thickAcked) { thickAsk.hidden = false; $('#thick-use').focus(); return; }
     if (priceBreakdown().dividers) sendPlan(); else { ask.hidden = false; $('#ask-back').focus(); }
   });
   on('#ask-back', 'click', () => { ask.hidden = true; });

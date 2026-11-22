@@ -407,3 +407,8 @@ body.embed #finish { width: auto; margin: 0; padding: 13px 24px; font-size: 16px
 .ph-embed-size[hidden], .ph-warn[hidden], .ph-size[hidden] { display: none; }
 .ph-actions { position: sticky; bottom: -22px; background: var(--sheet); padding: 12px 0 4px; margin-top: 4px; }
 @media (max-width: 720px) { .ph-thumb { max-height: 150px; } .ph-drop img { max-height: 200px; } .ph-modal { padding: 16px 16px; } .ph-modal .modal-head h2 { font-size: 24px; } }
+
+/* Organizer By Design: sheet thickness choice, and the warning for a thin sheet on a tall organizer */
+.thick-warn { margin-top: 12px; padding: 10px 12px; border-radius: 6px; border: 1px solid #e6c26f; background: #fff3d6; color: #5e4200; font-size: 14px; display: grid; gap: 8px; justify-items: start; }
+.thick-warn p { margin: 0; }
+.thick-warn[hidden] { display: none; }

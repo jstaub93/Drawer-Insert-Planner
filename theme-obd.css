@@ -111,6 +111,8 @@ body.embed[data-theme="obd"] .finish-bar, [data-theme="obd"] body.embed .finish-
 [data-theme="obd"] .num-chip.g3 { fill: #efe3d3; stroke: #9a6b3c; } [data-theme="obd"] .num-lock.g3 { fill: #9a6b3c; stroke: #9a6b3c; }
 [data-theme="obd"] .num-chip.fx { fill: #ebe6e1; stroke: #141414; } [data-theme="obd"] .num-lock.fx { fill: #141414; stroke: #141414; }
 
+[data-theme="obd"] .thick-warn { background: #f3eeea; border-color: #e1d6ca; color: #4a3f35; border-radius: 14px; }
+
 /* photo window */
 [data-theme="obd"] .photo-banner, [data-theme="obd"] .ph-warn { background: #f3eeea; border-color: #e1d6ca; color: #4a3f35; border-radius: 14px; }
 [data-theme="obd"] .ph-drop { border-color: #cfc6bc; border-radius: 18px; background: #faf8f6; }
