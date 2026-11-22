@@ -12,7 +12,9 @@
  * ===================================================================== */
 
 const MM_PER_IN = 25.4;           // only used to size the printed drawing in millimetres
-const WALL = 0.17;                // sheet thickness: outer wall and divider thickness (in)
+const OBD = new URLSearchParams(location.search).get('theme') === 'obd';      // Organizer By Design: its own sheet thickness, price and weight (see priceFor)
+let WALL = 0.17;                  // sheet thickness: outer wall and divider thickness (in); set from the insert height by drawerSize()
+const wallFor = H => (OBD ? (H > 3 + 1e-9 ? 0.375 : 0.25) : 0.17);       // OBD builds in 1/4 in sheet, and 3/8 in above 3 in tall
 const MIN_CELL = 1 / 16;          // smallest compartment edge (in): no real limit, just enough that two dividers never sit on top of each other
 const SNAP = 1 / 16;              // drag snapping (in)
 const EPS = 0.002;                // tolerance when matching positions (in)
@@ -86,8 +88,8 @@ const svgEl = (tag, attrs = {}) => {
 const GAPS = [0, 1, 2, 3, 4].map(g => g * EIGHTH);    // the list: none, 1/8, 1/4, 3/8, 1/2 inch
 const GAP_MAX = 4 * EIGHTH;                           // decimal input takes any gap from 0 to 1/2 inch
 const DEFAULT_GAP = EIGHTH;
-function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high
-  return { w: [5 * IN + 2 * g, 47 * IN + 2 * g], l: [5 * IN + 2 * g, 47 * IN + 2 * g], h: [IN / 2 + g, 15 * IN + g] };
+function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high (1-15 for Organizer By Design)
+  return { w: [5 * IN + 2 * g, 47 * IN + 2 * g], l: [5 * IN + 2 * g, 47 * IN + 2 * g], h: [(OBD ? 1 : 0.5) * IN + g, 15 * IN + g] };
 }
 function syncInsert() {
   const lim = drawerLimits(), clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
@@ -97,6 +99,7 @@ function syncInsert() {
 function drawerSize() {
   const { w, l, h } = state.dims;
   const H = unitsToIn(h);
+  WALL = wallFor(H);
   return { W: unitsToIn(w), L: unitsToIn(l), H, partH: H - WALL };   // partH: height of dividers and walls
 }
 
@@ -560,7 +563,12 @@ function physicalDividers(divs) {
 // the box's dimensional weight (each box side is the insert plus 2 in, each rounded to a whole inch, divided by 139).
 // Mirrors pricing/weight_model.py.
 const SHIP = { acrylic: 1.18 * 16.387064 / 453.59237, honeycomb: 6 / (48 * 96), allowance: 2, safety: 1.10, divisor: 139 };
+// Organizer By Design: its own price formula, the same as its other products (29.83 + 0.4 x thickness x (base + divider area)) with
+// a further 19.83 and 15% on top for a custom layout, and its weight formula. The area of dividers uses their full height.
+const OBD_PRICE = { base: 29.83, extra: 19.83, rate: 0.4, markup: 1.15 };
+const obdArea = (W, L, H, DA) => { const part = H - wallFor(H); return W * L + (part > 0 ? DA * H / part : 0); };
 function shippingFor(W, L, H, N, DA) {
+  if (OBD) { const w = Math.round(1.2 * 0.038 * wallFor(H) * obdArea(W, L, H, DA) * 100) / 100; return { obd: true, actual: w, dimensional: 0, boxDims: [], billable: w }; }
   const h = H - WALL;
   const area = W * L + 2 * h * (L + W - 2 * WALL) + DA;                       // every part that gets cut
   const acrylic = area * WALL * SHIP.acrylic;
@@ -572,6 +580,7 @@ function shippingFor(W, L, H, N, DA) {
   return { acrylic, box, actual, dimensional, boxDims: [round(a), round(b), round(c)], billable: Math.max(1, Math.ceil(Math.max(actual, dimensional) - 1e-9)) };
 }
 function priceFor(W, L, H, N, DA) {
+  if (OBD) return (OBD_PRICE.base + OBD_PRICE.extra + OBD_PRICE.rate * wallFor(H) * obdArea(W, L, H, DA)) * OBD_PRICE.markup;
   const h = H - WALL, S = h > 0 ? DA / h : 0;
   const area = W * L + 2 * h * (L + W - 2 * WALL) + DA;                       // every part that gets cut
   const cut = 6 * (W + L) - 8 * WALL + 8 * h + 2 * S + 2 * N * h;              // laser cutting length
@@ -1705,7 +1714,7 @@ function refresh() {
   $('#fb-price').textContent = fmtMoney(pb.total);
   $('#est-note').textContent = divided ? 'Updates as you divide and resize.' : 'Divide the drawer to add dividers, or use it as an empty tray.';
   $('#open-review').disabled = false;                 // an empty tray is a valid design
-  $('#stock-thickness').textContent = `${WALL.toFixed(2)}″`;
+  $('#stock-thickness').textContent = `${+WALL.toFixed(3)}″`;
   $('#stock-height').textContent = `${partH.toFixed(2)}″`;
   $('#stock-spaces').textContent = String(cells.length);
   $('#stock-dividers').textContent = String(pb.dividers);
@@ -1992,7 +2001,7 @@ function drawing() {
   R(2, titleTop, pageW - 4, titleH, { stroke: '#111', sw: 0.4 });
   T(6, titleTop + 8, 'Drawer insert plan, seen from above', 4.2, { bold: true });
   T(6, titleTop + 15, `Insert ${fmtIn(state.dims.w)} × ${fmtIn(state.dims.l)} × ${fmtIn(state.dims.h)} in (width, length, height), for a drawer ${fmtIn(state.drawer.w)} × ${fmtIn(state.drawer.l)} × ${fmtIn(state.drawer.h)} in inside`, 2.9);
-  T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${WALL.toFixed(2)} in, dividers ${drawerSize().partH.toFixed(2)} in tall`, 2.9);
+  T(6, titleTop + 20.5, `${sorted.length} ${sorted.length === 1 ? 'space' : 'spaces'}, ${physical.length} ${physical.length === 1 ? 'divider' : 'dividers'}, sheet ${+WALL.toFixed(3)} in, dividers ${+drawerSize().partH.toFixed(3)} in tall`, 2.9);
   T(6, titleTop + 26, 'Spaces show width × length in inches; an L shows its two leg sizes.', 2.9, { fill: '#444' });
   if (callouts.length || labels.length < cells.length * 2) T(6, titleTop + 31.5, 'Sizes too small to print here, and small lettered spaces, are on page 2.', 2.9, { fill: '#444' });
   T(6, titleTop + 38, `Scale 1:${ratio}. Print at 100%, not fit-to-page.`, 3.2, { bold: true });
@@ -2056,7 +2065,7 @@ function designData() {
       drawer: r(priceBreakdown().drawer), dividers: r(priceBreakdown().dividerCost), total: r(priceBreakdown().total),
     },
     order_fields: { drawer_label: drawerLabel(), divider_count: priceBreakdown().dividers, divider_area_sq_in: priceBreakdown().dividerArea, shipping_weight_lb: priceBreakdown().shipping.billable },
-    shipping: (() => { const s = priceBreakdown().shipping; return { box_in: s.boxDims, actual_weight_lb: r(s.actual), dimensional_weight_lb: r(s.dimensional), billable_weight_lb: s.billable }; })(),
+    shipping: (() => { const s = priceBreakdown().shipping; if (s.obd) return { billable_weight_lb: s.billable }; return { box_in: s.boxDims, actual_weight_lb: r(s.actual), dimensional_weight_lb: r(s.dimensional), billable_weight_lb: s.billable }; })(),
   };
 }
 
@@ -2089,8 +2098,8 @@ function sheetData({ pdf = false } = {}) {
         ['Drawer interior, as measured', `${exact(unitsToIn(state.drawer.w))} × ${exact(unitsToIn(state.drawer.l))} × ${exact(unitsToIn(state.drawer.h))}`],
         ['Safety gap (each side of the width and length, once off the height)', `${exact(unitsToIn(state.gap), 3)}`],
         ['Insert size (width × length × height)', `${exact(W)} × ${exact(L)} × ${exact(H)}`],
-        ['Divider height (insert height less one sheet)', inch(partH)],
-        ['Sheet thickness', inch(WALL)],
+        ['Divider height (insert height less one sheet)', exact(partH)],
+        ['Sheet thickness', exact(WALL)],
         ['Open spaces', String(data.compartments.length)],
       ] },
       ...(pdf ? [] : [{ title: 'Cost estimate', right: [1], total: true, rows: [
@@ -2098,7 +2107,7 @@ function sheetData({ pdf = false } = {}) {
         [`Dividers (${pb.dividers}, ${pb.dividerArea.toFixed(1)} sq in)`, fmtMoney(pb.dividerCost)],
         ['Estimated total', fmtMoney(pb.total)],
       ] }]),
-      ...(pdf ? [] : [{ title: 'Shipping', right: [1], rows: [
+      ...(pdf ? [] : [{ title: 'Shipping', right: [1], rows: pb.shipping.obd ? [['Shipping weight (1.2 × 0.038 × thickness × base and divider area)', `${pb.shipping.billable.toFixed(2)} lb`]] : [
         ['Box (each side is the insert plus 2 in)', `${pb.shipping.boxDims.join(' × ')} in`],
         ['Actual weight (acrylic and box, plus 10%)', `${pb.shipping.actual.toFixed(1)} lb`],
         ['Dimensional weight (UPS, divided by 139)', `${pb.shipping.dimensional.toFixed(1)} lb`],
@@ -2351,7 +2360,7 @@ on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
  * asks Claude what is in the drawer. What comes back is a drawer size estimate and groups of things (each group = one
  * compartment). Everything after that is plain code: the groups are given floor area in proportion to what they hold and cut
  * into dividers by the same layout engine as the rest of the planner, and each space is named after its group. */
-const BRAND = new URLSearchParams(location.search).get('theme') === 'obd' ? 'Organizer By Design' : 'Drawer Insert Planner';      // the name on the plan's pages (see ?theme= in index.html)
+const BRAND = OBD ? 'Organizer By Design' : 'Drawer Insert Planner';      // the name on the plan's pages (see ?theme= in index.html)
 const isEmbed = () => new URLSearchParams(location.search).has('embed') && window.parent !== window;       // inside the store's order form (see below)
 const PHOTO_API_URL = 'https://drawer-photo-reader.stauberjustin.workers.dev';                           // set to the address of the deployed photo-reader service; the button stays hidden while it is empty
 function photoApi() {
@@ -2638,6 +2647,7 @@ function phBuild() {
 function updatePhotoBanner() {
   $('#photo-banner').hidden = !state.photo;
   $('#photo-card').hidden = !photoApi();
+  if (OBD) { $('.fb-total small').textContent = 'Standard price'; $('#h-est').textContent = 'Estimated cost (3-week standard)'; }      // the order form adds any rush charge for a shorter processing time
 }
 {
   const drop = $('#ph-drop');
@@ -2690,7 +2700,7 @@ if (EMBED) {
     window.parent.postMessage({
       type: 'drawer-insert-plan', version: 1,
       dims: { width: W, length: L, height: H }, label: drawerLabel(),
-      dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100, weight: pb.shipping.billable,
+      dividerCount: pb.dividers, dividerArea: pb.dividerArea, total: Math.round(pb.total * 100) / 100, weight: pb.shipping.billable, thickness: WALL,
       json: jsonText(), pdf: buf,
     }, '*', [buf]);
     showUpload('progress', 0);
