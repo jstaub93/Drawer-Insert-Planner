@@ -2261,7 +2261,7 @@ function pdfFile(pages, title) {
   }
   objs[2] = `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages.length} >>`;
   const infoId = next++;
-  objs[infoId] = `<< /Title (${pdfStr(title)}) /Producer (Drawer Insert Planner) >>`;
+  objs[infoId] = `<< /Title (${pdfStr(title)}) /Producer (${pdfStr(BRAND)}) >>`;
   let out = '%PDF-1.4\n%âãÏÓ\n';
   const offsets = [];
   for (let id = 1; id < next; id++) { offsets[id] = out.length; out += `${id} 0 obj\n${objs[id]}\nendobj\n`; }
@@ -2279,7 +2279,7 @@ function makePlanPdf() {
   const pages = [drawingPage, ...pdfSheetPages(sheetData({ pdf: true }).sections, subtitle)];
   const today = new Date().toISOString().slice(0, 10);
   const footer = (i, n) => {
-    const label = `Drawer Insert Planner   ${today}`, right = `Page ${i} of ${n}`;
+    const label = `${BRAND}   ${today}`, right = `Page ${i} of ${n}`;
     const y = PDF_H - 22;
     return `BT /F1 8 Tf ${pdfRGB('#777')} rg 1 0 0 1 ${PDF_MARGIN} ${y} Tm (${pdfStr(label)}) Tj ET\nBT /F1 8 Tf ${pdfRGB('#777')} rg 1 0 0 1 ${pdfNum(PDF_W - PDF_MARGIN - pdfWidth(right, 8, false))} ${y} Tm (${pdfStr(right)}) Tj ET`;
   };
@@ -2351,6 +2351,7 @@ on('#rev-copy-csv', 'click', e => copyText(csvText(), e.currentTarget));
  * asks Claude what is in the drawer. What comes back is a drawer size estimate and groups of things (each group = one
  * compartment). Everything after that is plain code: the groups are given floor area in proportion to what they hold and cut
  * into dividers by the same layout engine as the rest of the planner, and each space is named after its group. */
+const BRAND = new URLSearchParams(location.search).get('theme') === 'obd' ? 'Organizer By Design' : 'Drawer Insert Planner';      // the name on the plan's pages (see ?theme= in index.html)
 const isEmbed = () => new URLSearchParams(location.search).has('embed') && window.parent !== window;       // inside the store's order form (see below)
 const PHOTO_API_URL = 'https://drawer-photo-reader.stauberjustin.workers.dev';                           // set to the address of the deployed photo-reader service; the button stays hidden while it is empty
 function photoApi() {

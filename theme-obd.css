@@ -1,0 +1,124 @@
+/* Organizer By Design look for the planner (?theme=obd). Loaded after style.css and only overrides it:
+   a soft, modern store feel (warm neutrals, black buttons, rounded shapes, DM Sans) in place of the drafting-table look. */
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("vendor/fonts/dm-sans-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("vendor/fonts/dm-sans-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("vendor/fonts/dm-sans-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 700; font-display: swap; src: url("vendor/fonts/dm-sans-latin-700-normal.woff2") format("woff2"); }
+
+:root[data-theme="obd"] {
+  --paper: #f3eeea;
+  --sheet: #ffffff;
+  --ink: #141414;
+  --ink-2: #6a645e;
+  --rule: #e7e1db;
+  --accent: #141414;
+  --accent-soft: #eee6de;
+  --ply: #b9bcc0;            /* the dividers are drawn in grey, like the store's grey organizers */
+  --ply-edge: #868a8f;
+  --amber: #e8604f;
+  --danger: #b3261e;
+  --font-head: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+[data-theme="obd"] body { font-size: 15.5px; font-variant-numeric: tabular-nums; }
+
+/* headings: plain sentence case instead of condensed capitals */
+[data-theme="obd"] .card h2, [data-theme="obd"] .help summary, [data-theme="obd"] .modal-head h2, [data-theme="obd"] #rev-body h3,
+[data-theme="obd"] .ph-hint b, [data-theme="obd"] .ph-size legend, [data-theme="obd"] .pop-title, [data-theme="obd"] .front-text, [data-theme="obd"] .insert-box span,
+[data-theme="obd"] .finish-bar .fb-total small { text-transform: none; letter-spacing: 0; }
+[data-theme="obd"] .card h2 { font: 500 19px/1.2 var(--font-head); }
+[data-theme="obd"] .help summary { font: 500 17px var(--font-head); }
+[data-theme="obd"] .modal-head h2 { font: 500 28px var(--font-head); }
+[data-theme="obd"] #rev-body h3 { font: 500 16px var(--font-head); color: var(--ink); }
+[data-theme="obd"] .ph-hint b { font: 500 20px var(--font-head); }
+[data-theme="obd"] .ph-size legend { font: 500 14px var(--font-head); }
+[data-theme="obd"] .front-text { font: 500 12.5px var(--font-head); letter-spacing: 0.04em; }
+[data-theme="obd"] .insert-box span { font: 500 12.5px var(--font-body); }
+[data-theme="obd"] .finish-bar .fb-total small { font: 500 12px var(--font-body); }
+[data-theme="obd"] .estimate .total, [data-theme="obd"] .finish-bar .fb-total b, [data-theme="obd"] .insert-box b { font-weight: 500; letter-spacing: -0.01em; }
+[data-theme="obd"] .estimate .total { font-size: 38px; }
+
+/* masthead (not shown inside the order form) */
+[data-theme="obd"] .masthead { background: #000; color: #fff; }
+[data-theme="obd"] .brand b { font: 500 22px/1.1 var(--font-head); text-transform: none; letter-spacing: 0; }
+[data-theme="obd"] .brand span { color: #c9c4be; }
+[data-theme="obd"] .mark rect { fill: #2a2a2a; }
+[data-theme="obd"] .mark path { stroke: #fff; }
+
+/* cards, panels and the plan: roomy, rounded, hairline borders */
+[data-theme="obd"] .card, [data-theme="obd"] .plan { border-radius: 18px; border-color: #ece6e0; }
+[data-theme="obd"] .card { padding: 18px 20px 20px; }
+[data-theme="obd"] .stage { border-radius: 0 0 18px 18px; background-color: #faf8f6; background-image: radial-gradient(#e1dad3 1px, transparent 1.2px); }
+[data-theme="obd"] .plan-bar { border-bottom-color: #ece6e0; }
+[data-theme="obd"] .modal { border-radius: 22px; border-top: 0; padding: 26px 28px; }
+[data-theme="obd"] .modal-backdrop, [data-theme="obd"] #upload-overlay, [data-theme="obd"] #confirm-overlay, [data-theme="obd"] .confirm-ov { background: rgba(20, 16, 12, 0.55); }
+[data-theme="obd"] #upload-overlay .ov-card, [data-theme="obd"] #confirm-overlay .ov-card, [data-theme="obd"] .confirm-ov .ov-card { border-radius: 22px; }
+[data-theme="obd"] #upload-overlay .ov-bar { background: #ece6e0; }
+[data-theme="obd"] .icon-btn { background: #f3eeea; }
+
+/* buttons and fields: pills and soft corners */
+[data-theme="obd"] .btn, [data-theme="obd"] .link-btn, [data-theme="obd"] .tool { border-radius: 999px; font-weight: 500; letter-spacing: 0; }
+[data-theme="obd"] .btn { border-color: #d9d2ca; padding: 10px 18px; }
+[data-theme="obd"] .btn:hover:not(:disabled) { border-color: var(--ink); }
+[data-theme="obd"] .btn.primary { background: #000; border-color: #000; letter-spacing: 0; padding: 12px 20px; }
+[data-theme="obd"] .btn.primary:hover:not(:disabled) { background: #333; border-color: #333; }
+[data-theme="obd"] .btn.danger { border-color: #e1b4af; }
+[data-theme="obd"] .link-btn { color: var(--ink); border-color: #d9d2ca; font-weight: 500; }
+[data-theme="obd"] .link-btn:hover { background: var(--accent-soft); }
+[data-theme="obd"] .tool { padding: 7px 12px; }
+[data-theme="obd"] .tool:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+[data-theme="obd"] select, [data-theme="obd"] .dec-input, [data-theme="obd"] .text-input, [data-theme="obd"] .ph-dims input, [data-theme="obd"] .ph-name, [data-theme="obd"] .pop-name input {
+  border-radius: 12px; border-color: #d9d2ca; font-weight: 500; font-size: 16px;
+}
+[data-theme="obd"] .dec-input:focus, [data-theme="obd"] .text-input:focus { outline-color: var(--ink); }
+[data-theme="obd"] select:focus-visible, [data-theme="obd"] button:focus-visible, [data-theme="obd"] summary:focus-visible { outline-color: var(--ink); }
+[data-theme="obd"] .insert-box { border-radius: 14px; border-color: #e1d6ca; background: #f3eeea; }
+
+/* popovers and notes */
+[data-theme="obd"] .popover { border-radius: 16px; border-color: #e1dad2; box-shadow: 0 12px 32px rgba(40, 28, 18, 0.18); overflow: hidden; }
+[data-theme="obd"] .pop-title { background: #000; border-radius: 0; font: 500 15px var(--font-head); }
+[data-theme="obd"] .pop-grid button { border-radius: 12px; font-weight: 500; }
+[data-theme="obd"] .pop-grid button:hover:not(:disabled), [data-theme="obd"] .corner-pick button:hover { border-color: var(--ink); background: var(--accent-soft); }
+[data-theme="obd"] .corner-pick button { border-radius: 12px; }
+[data-theme="obd"] .corner-pick button.on { border-color: var(--ink); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--ink); }
+[data-theme="obd"] .note-bar.pending, [data-theme="obd"] .set-bar { background: #141414; }
+[data-theme="obd"] .set-bar { border-radius: 18px; }
+[data-theme="obd"] .set-bar .btn.primary { background: #fff; border-color: #fff; color: #141414; font-weight: 600; }
+[data-theme="obd"] .set-bar .btn.primary:hover:not(:disabled) { background: #eee6de; }
+[data-theme="obd"] .zoom-ctl { border-radius: 999px; box-shadow: 0 4px 14px rgba(40, 28, 18, 0.14); border-color: #e7e1db; }
+[data-theme="obd"] .zoom-ctl button:hover:not(:disabled) { background: var(--accent-soft); }
+
+/* the price bar inside the order form */
+body.embed[data-theme="obd"] .finish-bar, [data-theme="obd"] body.embed .finish-bar { border-radius: 999px; border-color: #e7e1db; box-shadow: 0 10px 28px rgba(40, 28, 18, 0.22); padding: 8px 8px 8px 20px; }
+[data-theme="obd"] body.embed #finish { border-radius: 999px; background: #000; border-color: #000; }
+
+/* the drawing */
+[data-theme="obd"] .wall { stroke-width: 1; }
+[data-theme="obd"] .outline { stroke: #141414; }
+[data-theme="obd"] .cell:hover, [data-theme="obd"] .sub-hover { fill: var(--accent-soft); }
+[data-theme="obd"] .sub-hover, [data-theme="obd"] .sub-sel, [data-theme="obd"] .hint-ring, [data-theme="obd"] .hint-plus { stroke: #141414; }
+[data-theme="obd"] .sub-sel { fill: #e5dbd0; }
+[data-theme="obd"] .seg-sel { fill: #f7d3cc; stroke: #d63a2f; }
+[data-theme="obd"] .ell-corner:hover { fill: #fbe3df; }
+[data-theme="obd"] .dimline { stroke: #8b847d; }
+[data-theme="obd"] .num-box { stroke: #bdb5ad; }
+[data-theme="obd"] .num-hit.sel { fill: #fbe3df; }
+[data-theme="obd"] .leg-line { stroke: #141414; }
+[data-theme="obd"] .num-chip.g0 { fill: #ebe6e1; stroke: #141414; } [data-theme="obd"] .num-lock.g0 { fill: #141414; stroke: #141414; }
+[data-theme="obd"] .num-chip.g1 { fill: #fbe3df; stroke: #d63a2f; } [data-theme="obd"] .num-lock.g1 { fill: #d63a2f; stroke: #d63a2f; }
+[data-theme="obd"] .num-chip.g2 { fill: #dcefe8; stroke: #1f8a6f; } [data-theme="obd"] .num-lock.g2 { fill: #1f8a6f; stroke: #1f8a6f; }
+[data-theme="obd"] .num-chip.g3 { fill: #efe3d3; stroke: #9a6b3c; } [data-theme="obd"] .num-lock.g3 { fill: #9a6b3c; stroke: #9a6b3c; }
+[data-theme="obd"] .num-chip.fx { fill: #ebe6e1; stroke: #141414; } [data-theme="obd"] .num-lock.fx { fill: #141414; stroke: #141414; }
+
+/* photo window */
+[data-theme="obd"] .photo-banner, [data-theme="obd"] .ph-warn { background: #f3eeea; border-color: #e1d6ca; color: #4a3f35; border-radius: 14px; }
+[data-theme="obd"] .ph-drop { border-color: #cfc6bc; border-radius: 18px; background: #faf8f6; }
+[data-theme="obd"] .ph-drop:hover, [data-theme="obd"] .ph-drop.over { border-color: #141414; }
+[data-theme="obd"] .ph-busy, [data-theme="obd"] .ph-embed-size, [data-theme="obd"] .ph-group, [data-theme="obd"] .ph-size { border-radius: 14px; }
+[data-theme="obd"] .ph-busy { background: #faf8f6; }
+[data-theme="obd"] .ph-chip { background: #f3eeea; border-color: #e1d6ca; }
+[data-theme="obd"] .ph-err, [data-theme="obd"] .set-error { border-radius: 12px; }
+[data-theme="obd"] .ph-thumb { border-radius: 14px; }
+[data-theme="obd"] .ph-bar i { background: #141414; }
+[data-theme="obd"] .ph-embed-size { background: #faf8f6; }
