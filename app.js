@@ -15,7 +15,8 @@ const MM_PER_IN = 25.4;           // only used to size the printed drawing in mi
 const OBD = new URLSearchParams(location.search).get('theme') === 'obd';      // Organizer By Design: its own sheet thickness, price and weight (see priceFor)
 let WALL = 0.17;                  // sheet thickness: outer wall and divider thickness (in); set from the insert height by drawerSize()
 const wallFor = H => (OBD ? (H > 3 + 1e-9 ? 0.375 : 0.25) : 0.17);       // OBD builds in 1/4 in sheet, and 3/8 in above 3 in tall
-const MIN_CELL = 1 / 16;          // smallest compartment edge (in): no real limit, just enough that two dividers never sit on top of each other
+const MIN_CELL = OBD ? 0.5 : 1 / 16;   // smallest compartment edge (in), wall to wall: Organizer By Design needs 1/2 in; otherwise no real limit, just enough that two dividers never sit on top of each other
+const MIN_TEXT = OBD ? '1/2″' : '1/16″';
 const SNAP = 1 / 16;              // drag snapping (in)
 const EPS = 0.002;                // tolerance when matching positions (in)
 const STORAGE_KEY = 'drawer-organizer-designer:v1';
@@ -88,8 +89,8 @@ const svgEl = (tag, attrs = {}) => {
 const GAPS = [0, 1, 2, 3, 4].map(g => g * EIGHTH);    // the list: none, 1/8, 1/4, 3/8, 1/2 inch
 const GAP_MAX = 4 * EIGHTH;                           // decimal input takes any gap from 0 to 1/2 inch
 const DEFAULT_GAP = EIGHTH;
-function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high (1-15 for Organizer By Design)
-  return { w: [5 * IN + 2 * g, 47 * IN + 2 * g], l: [5 * IN + 2 * g, 47 * IN + 2 * g], h: [(OBD ? 1 : 0.5) * IN + g, 15 * IN + g] };
+function drawerLimits(g = state.gap) {                // interior sizes that give an insert the store can make: 5-47 in wide and long, 1/2-15 in high (Organizer By Design: walls at least 1 in tall, so 1 1/4-15 in)
+  return { w: [5 * IN + 2 * g, 47 * IN + 2 * g], l: [5 * IN + 2 * g, 47 * IN + 2 * g], h: [(OBD ? 1.25 : 0.5) * IN + g, 15 * IN + g] };
 }
 function syncInsert() {
   const lim = drawerLimits(), clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
@@ -1298,9 +1299,9 @@ function sizeRange(m, geometryOnly) {
 function explainSize(m, v) {
   const R = wholeRect(), which = m.ax === 'x' ? 'wide' : 'long', lo2 = x => fmtSize(Math.ceil(x * 100 - 1e-6) / 100), hi2 = x => fmtSize(Math.floor(x * 100 + 1e-6) / 100);
   if (m.lo === 'W' && m.hi === 'W') return `This space runs from wall to wall, so the drawer sets how ${which} it is (${fmtSize(m.value)}). Change the drawer size to change it.`;
-  if (!(v >= MIN_CELL - 1e-9)) return `A space has to be at least 1/16″ ${which}, or the dividers around it would touch.`;
+  if (!(v >= MIN_CELL - 1e-9)) return `A space has to be at least ${MIN_TEXT} ${which}${OBD ? '' : ', or the dividers around it would touch'}.`;
   const geo = sizeRange(m, true);
-  if (v > geo[1] + 1e-6) return `That is too big. With the other dividers where they are (each kept at least 1/16″ clear of the next one), this space can be at most ${hi2(geo[1])} ${which}.`;
+  if (v > geo[1] + 1e-6) return `That is too big. With the other dividers where they are (each kept at least ${MIN_TEXT} clear of the next one), this space can be at most ${hi2(geo[1])} ${which}.`;
   if (v < geo[0] - 1e-6) return `That is too small. With the other dividers where they are, this space can be at least ${lo2(geo[0])} ${which}.`;
   const rng = sizeRange(m, false);
   if (rng[1] - rng[0] < 1e-3) return `This number can't change right now: the numbers that are linked or set to a size hold it at ${fmtSize(m.value)}. Unlock one of them first.`;
