@@ -2411,12 +2411,12 @@ function photoScore(g, w, h) {                               // how badly a spac
   return s;
 }
 // Cut the floor into one space per group by repeatedly dividing it in two where each side's area follows what the groups on it need
-function photoTreemap(gs, x, y, w, h) {
+function photoTreemap(gs, x, y, w, h, only) {       // only: restrict the first cut to 'v' or 'h'
   if (gs.length === 1) return { cells: [{ g: gs[0], x, y, w, h }], divs: [], score: photoScore(gs[0], w, h) };
   let best = null;
   for (let k = 1; k < gs.length; k++) {
     const A = gs.slice(0, k), B = gs.slice(k), a = A.reduce((s, g) => s + g.need, 0), b = B.reduce((s, g) => s + g.need, 0);
-    for (const dir of ['v', 'h']) {
+    for (const dir of only ? [only] : ['v', 'h']) {
       const avail = (dir === 'v' ? w : h) - WALL, s1 = Math.round(avail * a / (a + b) * 16) / 16, s2 = avail - s1;
       if (s1 < 0.75 || s2 < 0.75) continue;
       const r1 = dir === 'v' ? photoTreemap(A, x, y, s1, h) : photoTreemap(A, x, y, w, s1);
@@ -2446,49 +2446,103 @@ function photoStrips(gs, W, H) {
   });
   return { cells, divs };
 }
-// The dividers and names for the groups in the drawer's floor R: { plan, cells: [{ name, cx, cy }], variant, score } or null
-function suggestLayout(groups, R) {
+// Full-width strips stacked front to back: the strips layout turned a quarter turn
+function photoRows(gs, W, H) {
+  const t = photoStrips(gs, H, W);
+  return { cells: t.cells.map(c => ({ g: c.g, x: c.y, y: c.x, w: c.h, h: c.w })), divs: t.divs.map(d => ({ axis: d.axis === 'v' ? 'h' : 'v', pos: d.pos, s: d.s, e: d.e })) };
+}
+const PHOTO_VARIANTS = { grid: 'A grid, each space sized to what it holds', strips: 'Spaces running front to back, side by side, for long things', rows: 'Spaces running side to side, stacked, for wide things' };
+// Up to `max` different layouts for the groups in the drawer's floor R, best first:
+// [{ plan, cells: [{ name, cx, cy }], variant, score, spaces }] (empty when nothing fits). When the groups are too many for the drawer the
+// two smallest share a space until a layout fits.
+function suggestLayouts(groups, R, max = 3) {
   let gs = photoPrep(groups);
+  const asked = gs.length;
   while (gs.length) {
-    const tries = [{ variant: 'grid', r: photoTreemap(gs, 0, 0, R.w, R.h) }, { variant: 'strips', r: photoStrips(gs, R.w, R.h) }];
-    for (const t of tries) t.score = t.r.cells.reduce((s, c) => s + photoScore(c.g, c.w, c.h), 0) + (t.r.cells.length < gs.length || t.r.divs.length < gs.length - 1 || t.r.cells.some(c => Math.min(c.w, c.h) < 0.75) ? 99 : 0);
-    tries.sort((a, b) => a.score - b.score);
-    for (const t of tries) {
+    const byLong = [...gs].sort((a, b) => b.minLong - a.minLong);
+    const raw = [
+      { variant: 'grid', r: photoTreemap(gs, 0, 0, R.w, R.h) }, { variant: 'grid', r: photoTreemap(gs, 0, 0, R.w, R.h, 'v') },
+      { variant: 'grid', r: photoTreemap(gs, 0, 0, R.w, R.h, 'h') }, { variant: 'grid', r: photoTreemap(byLong, 0, 0, R.w, R.h) },
+      { variant: 'strips', r: photoStrips(gs, R.w, R.h) }, { variant: 'rows', r: photoRows(gs, R.w, R.h) },
+    ];
+    const found = [], seen = new Set();
+    for (const t of raw) {
+      t.score = t.r.cells.reduce((s, c) => s + photoScore(c.g, c.w, c.h), 0) + (t.r.cells.length < gs.length || t.r.divs.length < gs.length - 1 || t.r.cells.some(c => Math.min(c.w, c.h) < 0.75) ? 99 : 0);
       if (t.score >= 99 && gs.length > 1) continue;                       // too cramped to cut into that many spaces
+      const q = v => Math.round(v * 4) / 4;
+      const sig = t.r.divs.map(d => `${d.axis}${q(d.pos)}:${q(d.s)}-${q(d.e)}`).sort().join('|') + '#' + t.r.cells.map(c => `${c.g.name}@${q(c.x + c.w / 2)},${q(c.y + c.h / 2)}`).sort().join('|');
+      if (seen.has(sig)) continue;
       const lines = t.r.divs.map(d => (d.axis === 'v' ? { axis: 'v', pos: R.x + d.pos, s: R.y + d.s, e: R.y + d.e } : { axis: 'h', pos: R.y + d.pos, s: R.x + d.s, e: R.x + d.e }));
       const plan = finishLines(R, lines, [], []);
-      if (plan) return { plan, cells: t.r.cells.map(c => ({ name: c.g.name, cx: R.x + c.x + c.w / 2, cy: R.y + c.y + c.h / 2 })), variant: t.variant, score: t.score };
+      if (!plan) continue;
+      seen.add(sig);
+      found.push({ plan, cells: t.r.cells.map(c => ({ name: c.g.name, cx: R.x + c.x + c.w / 2, cy: R.y + c.y + c.h / 2 })), variant: t.variant, score: t.score, spaces: t.r.cells.length, merged: asked - gs.length });
     }
-    if (gs.length === 1) return null;
-    const b = gs.pop(), a = gs.pop();                                     // fewer, bigger spaces: the two smallest groups share one
+    if (found.length) {                                                    // the best of each kind first, so the choices look different from each other
+      found.sort((a, b) => a.score - b.score);
+      const pick = ['grid', 'strips', 'rows'].map(v => found.find(f => f.variant === v)).filter(Boolean).sort((a, b) => a.score - b.score).slice(0, max);
+      for (const f of found) if (pick.length < max && !pick.includes(f)) pick.push(f);
+      return pick;
+    }
+    if (gs.length === 1) return [];
+    const b = gs.pop(), a = gs.pop();
     gs.push({ name: 'Small odds and ends', items: [...a.items, ...b.items], need: a.need + b.need, minLong: Math.max(a.minLong, b.minLong) });
     gs.sort((x, y) => y.need - x.need);
   }
-  return null;
+  return [];
 }
-// Put the suggestion in the planner: the drawer size, the dividers and the names. False if no layout could be made.
-function applySuggestion(groups, size) {       // size: the drawer size to use, or null to keep the one in the planner (the order form's)
+// A small drawing of an option, for the choice window (the drawer size it was made for must be the planner's current one)
+function optionThumb(opt) {
+  const { W, L } = drawerSize(), lay = layoutOf(opt.plan.segs, W, L);
+  const r = v => Math.round(v * 1000) / 1000;
+  const parts = [`<rect class="t-wall" x="0" y="0" width="${r(W)}" height="${r(L)}"/>`];
+  for (const c of lay.cells) if (!c.poly) parts.push(`<rect class="t-cell" x="${r(c.x)}" y="${r(c.y)}" width="${r(c.w)}" height="${r(c.h)}"/>`);
+  for (const d of lay.divs) parts.push(`<rect class="t-div" x="${r(d.x)}" y="${r(d.y)}" width="${r(d.w)}" height="${r(d.h)}"/>`);
+  for (const c of opt.cells) {
+    const f = lay.cells.find(q => !q.poly && c.cx > q.x && c.cx < q.x + q.w && c.cy > q.y && c.cy < q.y + q.h);
+    if (!f) continue;
+    const words = c.name.split(' '), half = Math.ceil(words.length / 2), lines = c.name.length > 11 && words.length > 1 ? [words.slice(0, half).join(' '), words.slice(half).join(' ')] : [c.name];
+    const longest = Math.max(...lines.map(t => t.length)), fs = Math.max(0.55, Math.min(1.7, 0.92 * f.w / (0.56 * longest), 0.85 * f.h / (lines.length * 1.2)));
+    lines.forEach((t, i) => parts.push(`<text class="t-name" x="${r(f.x + f.w / 2)}" y="${r(f.y + f.h / 2 + (i - (lines.length - 1) / 2) * fs * 1.2)}" font-size="${r(fs)}" text-anchor="middle" dominant-baseline="central">${esc(t)}</text>`));
+  }
+  return `<svg class="ph-thumbsvg" viewBox="0 0 ${r(W)} ${r(L)}" role="img" aria-label="Layout with ${opt.spaces} spaces">${parts.join('')}</svg>`;
+}
+// The layouts to choose from for the groups, made for the drawer size given (null: the planner's own, the order form's). Nothing in the
+// planner changes: [{ ...layout, size, thumb }], empty if no layout could be made.
+function suggestOptions(groups, size, max = 3) {
   const lim = drawerLimits(), fit = (v, [lo, hi]) => clamp(snapEighth(Math.round(v * IN)), lo, hi);
-  const before = { drawer: { ...state.drawer }, dims: { ...state.dims } };
+  const before = { drawer: { ...state.drawer } };
   if (size) { state.drawer = { w: fit(size.w, lim.w), l: fit(size.l, lim.l), h: fit(size.h, lim.h) }; syncInsert(); }
-  const res = suggestLayout(groups, wholeRect());
-  if (!res) { state.drawer = before.drawer; syncInsert(); return false; }
-  state.segs = res.plan.segs; state.eq = []; state.fix = []; state.names = [];
+  const out = suggestLayouts(groups, wholeRect(), max).map(o => ({ ...o, size, thumb: optionThumb(o) }));
+  state.drawer = before.drawer; syncInsert(); drawerSize();
+  return out;
+}
+// Put a chosen option in the planner: the drawer size, the dividers and the names
+function applyOption(opt) {
+  const lim = drawerLimits(), fit = (v, [lo, hi]) => clamp(snapEighth(Math.round(v * IN)), lo, hi);
+  if (opt.size) { state.drawer = { w: fit(opt.size.w, lim.w), l: fit(opt.size.l, lim.l), h: fit(opt.size.h, lim.h) }; syncInsert(); }
+  state.segs = opt.plan.segs; state.eq = []; state.fix = []; state.names = [];
   const lay = currentLayout();
-  for (const c of res.cells) {
+  for (const c of opt.cells) {
     const face = lay.cells.find(f => faceRects(f).some(r => c.cx > r.x && c.cx < r.x + r.w && c.cy > r.y && c.cy < r.y + r.h));
     if (face) setName(face, c.name);
   }
-  state.photo = !!size; state.suggested = true;                // a size taken from the photo has to be confirmed as measured; one the customer entered does not
+  state.photo = !!opt.size; state.suggested = true;            // a size taken from the photo has to be confirmed as measured; one the customer entered does not
   pendingNum = null; closePopover();
   showSizes();
   commit();
+}
+// The best layout straight into the planner. False if no layout could be made.
+function applySuggestion(groups, size) {
+  const [best] = suggestOptions(groups, size, 1);
+  if (!best) return false;
+  applyOption(best);
   return true;
 }
 
 /* ---- the window ---- */
 const phs = { file: null, url: null, groups: [], size: { w: 18, l: 22, h: 3 }, meta: {}, ctl: null };
-const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2'].forEach((id, i) => { $(id).hidden = i !== n; }); };
+const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2', '#ph-s3'].forEach((id, i) => { $(id).hidden = i !== n; }); };
 function phError(msg) { const e = $('#ph-err'); e.textContent = msg || ''; e.hidden = !msg; }
 function openPhoto() {
   phs.file = null; phs.groups = []; if (phs.url) { URL.revokeObjectURL(phs.url); phs.url = null; }
@@ -2646,21 +2700,36 @@ function phRenderResults() {
     box.appendChild(card);
   });
 }
+// "Build my layout": check the drawer size and the spaces, then show a few layouts to choose from
 function phBuild() {
-  if (isEmbed()) {
-    if (!phs.groups.some(g => g.on && g.items.length)) { const e = $('#ph-build-err'); e.textContent = 'Switch on at least one space.'; e.hidden = false; return; }
-    if (!applySuggestion(phs.groups, null)) { const e = $('#ph-build-err'); e.textContent = 'A layout could not be made for those items in a drawer that size. Try switching off some spaces.'; e.hidden = false; return; }
-    closePhoto(); showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000); return;
-  }
-  const w = parseFloat($('#ph-w').value), l = parseFloat($('#ph-l').value), h = parseFloat($('#ph-h').value), lim = drawerLimits(), err = $('#ph-build-err');
+  const err = $('#ph-build-err'), bad = msg => { err.textContent = msg; err.hidden = false; };
   err.hidden = true;
-  const bad = msg => { err.textContent = msg; err.hidden = false; };
-  if (!(w >= lim.w[0] / IN && w <= lim.w[1] / IN && l >= lim.l[0] / IN && l <= lim.l[1] / IN)) return bad(`The drawer must be between ${lim.w[0] / IN} and ${lim.w[1] / IN} inches wide and long (the planner makes inserts in that range).`);
-  if (!(h >= lim.h[0] / IN && h <= lim.h[1] / IN)) return bad(`The drawer height must be between ${lim.h[0] / IN} and ${lim.h[1] / IN} inches.`);
+  let size = null;
+  if (!isEmbed()) {
+    const w = parseFloat($('#ph-w').value), l = parseFloat($('#ph-l').value), h = parseFloat($('#ph-h').value), lim = drawerLimits();
+    if (!(w >= lim.w[0] / IN && w <= lim.w[1] / IN && l >= lim.l[0] / IN && l <= lim.l[1] / IN)) return bad(`The drawer must be between ${lim.w[0] / IN} and ${lim.w[1] / IN} inches wide and long (the planner makes inserts in that range).`);
+    if (!(h >= lim.h[0] / IN && h <= lim.h[1] / IN)) return bad(`The drawer height must be between ${lim.h[0] / IN} and ${lim.h[1] / IN} inches.`);
+    size = { w, l, h };
+  }
   if (!phs.groups.some(g => g.on && g.items.length)) return bad('Switch on at least one space.');
-  if (!applySuggestion(phs.groups, { w, l, h })) return bad('A layout could not be made for those items in a drawer that size. Try switching off some spaces or check the size.');
-  closePhoto();
-  showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000);
+  phs.options = suggestOptions(phs.groups, size);
+  if (!phs.options.length) return bad(isEmbed() ? 'A layout could not be made for those items in a drawer that size. Try switching off some spaces.' : 'A layout could not be made for those items in a drawer that size. Try switching off some spaces or check the size.');
+  phRenderOptions();
+  phStage(3);
+}
+function phRenderOptions() {
+  const box = $('#ph-opts'); box.innerHTML = '';
+  const n = phs.options.length;
+  $('#ph-opts-note').textContent = n > 1 ? `Here are ${n} ways to arrange your spaces. Pick the one you like; you can change anything in the planner afterwards.` : 'Here is the layout we suggest. You can change anything in the planner afterwards.';
+  phs.options.forEach((o, i) => {
+    const card = document.createElement('div'); card.className = 'ph-opt';
+    card.innerHTML = `<div class="ph-optname"><b>Option ${i + 1}</b>${i === 0 && n > 1 ? '<span class="ph-best">Our pick</span>' : ''}</div>${o.thumb}<p class="note">${esc(PHOTO_VARIANTS[o.variant])}. ${o.spaces} ${o.spaces === 1 ? 'space' : 'spaces'}.${o.merged ? ' Some small things share a space to fit.' : ''}</p><button type="button" class="btn primary">Use this layout</button>`;
+    card.querySelector('button').addEventListener('click', () => {
+      applyOption(o);
+      closePhoto(); showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000);
+    });
+    box.appendChild(card);
+  });
 }
 function updatePhotoBanner() {
   $('#photo-banner').hidden = !state.photo;
@@ -2672,6 +2741,7 @@ function updatePhotoBanner() {
   on('#photo-open', 'click', openPhoto);
   on('#ph-close', 'click', closePhoto);
   on('#ph-back', 'click', () => phStage(0));
+  on('#ph-back2', 'click', () => phStage(2));
   on('#ph-file', 'change', e => phPick(e.target.files[0]));
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
