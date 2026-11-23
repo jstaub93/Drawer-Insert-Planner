@@ -2617,11 +2617,28 @@ function applySuggestion(groups, size) {
 
 /* ---- the window ---- */
 const phs = { file: null, url: null, groups: [], size: { w: 18, l: 22, h: 3 }, meta: {}, ctl: null };
-const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2', '#ph-s3'].forEach((id, i) => { $(id).hidden = i !== n; }); };
+const phStage = n => { ['#ph-s1', '#ph-busy', '#ph-s2', '#ph-s3', '#ph-sc'].forEach((id, i) => { $(id).hidden = i !== n; }); };
+// Inside the store's order form the layout is made for the measurements the customer entered: ask them to confirm those before the photo is read
+function phAsk() {
+  if (!isEmbed()) { phGo(); return; }
+  const d = state.drawer, row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+  $('#ph-confirm-facts').innerHTML = row('Width, side to side', `${fmtIn(d.w)}″`) + row('Length, front to back', `${fmtIn(d.l)}″`) + row('Height, floor to top', `${fmtIn(d.h)}″`) + row('Safety gap, each side', state.gap ? `${fmtIn(state.gap)}″` : 'None');
+  $('#ph-confirm-insert').textContent = `${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″`;
+  phError(''); phStage(4); $('#ph-yes').focus();
+}
+// "Go back and edit": close the window (keeping the chosen photo) and take the customer to the drawer measurements
+function phEditSizes() {
+  phs.keep = true; closePhoto();
+  const box = $(state.decimal ? '#dim-w-dec' : '#dim-w'); box.scrollIntoView({ block: 'center' }); box.focus();
+}
 function phError(msg) { const e = $('#ph-err'); e.textContent = msg || ''; e.hidden = !msg; }
 function openPhoto() {
-  phs.file = null; phs.groups = []; if (phs.url) { URL.revokeObjectURL(phs.url); phs.url = null; }
-  phPickId++; phHint(); $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false; $('#ph-go').disabled = true; $('#ph-file').value = '';
+  const keep = phs.keep && phs.file; phs.keep = false;           // came back from editing the measurements: the photo is still chosen
+  phs.groups = [];
+  if (!keep) {
+    phs.file = null; if (phs.url) { URL.revokeObjectURL(phs.url); phs.url = null; }
+    phPickId++; phHint(); $('#ph-preview').hidden = true; $('#ph-drop-hint').hidden = false; $('#ph-go').disabled = true; $('#ph-file').value = '';
+  }
   $('#ph-note1').textContent = isEmbed() ? 'Your photo is used only to read what is in your drawer and is not kept. The layout will be made for the drawer size you entered.' : 'Your photo is used only to read what is in your drawer and is not kept. The drawer size is estimated from the photo, so you will be asked to measure it before ordering.';
   phError(''); phStage(0); $('#photo-modal').hidden = false; $('#ph-close').focus();
 }
@@ -2836,7 +2853,9 @@ function updatePhotoBanner() {
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => phPick(e.dataTransfer.files[0]));
-  on('#ph-go', 'click', phGo);
+  on('#ph-go', 'click', phAsk);
+  on('#ph-yes', 'click', phGo);
+  on('#ph-edit', 'click', phEditSizes);
   on('#ph-stop', 'click', () => { if (phs.ctl) phs.ctl.abort(); });
   on('#ph-build', 'click', phBuild);
   on('#photo-modal', 'click', e => { if (e.target.id === 'photo-modal' && $('#ph-s1').hidden === false) closePhoto(); });

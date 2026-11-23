@@ -431,3 +431,6 @@ body.embed #finish { width: auto; margin: 0; padding: 13px 24px; font-size: 16px
 .ph-thumbsvg .t-name { fill: var(--ink); font-family: var(--font-body); font-weight: 600; }
 .ph-opt .note { margin: 0; }
 .ph-opt .btn.primary { width: 100%; }
+
+.ph-confirm { margin: 10px 0 12px; font-size: 15px; }
+.ph-confirm dd { font-size: 16px; }
