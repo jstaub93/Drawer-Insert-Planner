@@ -434,3 +434,6 @@ body.embed #finish { width: auto; margin: 0; padding: 13px 24px; font-size: 16px
 
 .ph-confirm { margin: 10px 0 12px; font-size: 15px; }
 .ph-confirm dd { font-size: 16px; }
+
+.ph-add { width: auto; justify-self: start; padding: 6px 14px; font-size: 13px; }
+#ph-add-space { margin-bottom: 4px; }

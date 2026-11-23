@@ -2765,7 +2765,10 @@ async function phGo() {
     phError(PH_ERRORS[e && e.status] || (e && e.status >= 500 ? 'The photo reader is busy or unavailable. Please try again in a moment.' : 'The photo could not be read. Check your connection and try again, or use a different photo.'));
   } finally { clearInterval(tick); phs.ctl = null; $('#ph-go').disabled = !phs.file; }
 }
-function phRenderResults() {
+const newItem = () => ({ name: 'New item', count: 1, length_in: 3, width_in: 1 });       // a starting point the customer edits
+function phAddSpace() { phs.groups.push({ name: 'New space', on: true, items: [newItem()] }); phRenderResults(g => g === phs.groups[phs.groups.length - 1]); }
+// focus: optionally, which group's newest item name to select once the cards are drawn
+function phRenderResults(focus) {
   $('#ph-thumb').src = phs.url || '';
   $('#ph-quality').textContent = phs.meta.quality === 'good' ? 'The photo was clear enough to work from.' : 'The photo was not ideal. ' + (phs.meta.tip || 'A top-down shot with things spread out works best.');
   const embed = isEmbed();
@@ -2802,10 +2805,18 @@ function phRenderResults() {
       li.querySelector('.ph-x').addEventListener('click', () => { g.items.splice(ii, 1); if (!g.items.length) g.on = false; phRenderResults(); });
       ul.appendChild(li);
     });
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'btn ph-add'; add.textContent = '+ Add an item';
+    add.addEventListener('click', () => { g.items.push(newItem()); g.on = true; phRenderResults(card2 => card2 === g); });
+    card.appendChild(add);
     card.querySelector('input[type=checkbox]').addEventListener('change', e => { g.on = e.target.checked; card.classList.toggle('off', !g.on); });
     card.querySelector('input.ph-name').addEventListener('input', e => { g.name = cleanName(e.target.value); });
     box.appendChild(card);
   });
+  if (typeof focus === 'function') {                                // a new item: put the cursor in its name, ready to type over
+    const gi = phs.groups.findIndex(focus), cardEl = box.children[gi], names = cardEl && cardEl.querySelectorAll('.ph-itname');
+    const el = names && names[names.length - 1];
+    if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); el.select(); }
+  }
 }
 // "Build my layout": check the drawer size and the spaces, then show a few layouts to choose from
 function phBuild() {
@@ -2849,6 +2860,7 @@ function updatePhotoBanner() {
   on('#ph-close', 'click', closePhoto);
   on('#ph-back', 'click', () => phStage(0));
   on('#ph-back2', 'click', () => phStage(2));
+  on('#ph-add-space', 'click', phAddSpace);
   on('#ph-file', 'change', e => phPick(e.target.files[0]));
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
