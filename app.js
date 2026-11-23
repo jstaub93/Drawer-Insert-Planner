@@ -2694,7 +2694,7 @@ function phClean(raw) {
     name: cleanName(g.name || 'Space').trim() || 'Space', on: true,
     items: (Array.isArray(g.items) ? g.items : []).slice(0, 20).map(i => ({ name: cleanName(i.name || 'item').trim() || 'item', count: clamp(Math.round(num(i.count) || 1), 1, 99), length_in: clamp(num(i.length_in) || 3, 0.2, 40), width_in: clamp(num(i.width_in) || 1, 0.1, 30) })),
   })).filter(g => g.items.length);
-  return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { quality: raw && raw.photo_quality, tip: sentence(raw && raw.photo_tip), basis: sentence(d.basis), conf: String(d.confidence || '') } };
+  return { groups, size: { w: clamp(num(d.width_in) || 18, 5, 47), l: clamp(num(d.length_in) || 22, 5, 47), h: num(d.height_in) ? clamp(num(d.height_in), 0.5, 15) : 3 }, meta: { basis: sentence(d.basis), conf: String(d.confidence || '') } };
 }
 const PH_ERRORS = { 413: 'That photo is too large. Try a smaller one.', 415: 'That kind of file cannot be used. Try a JPEG or PNG photo.', 429: 'Too many photos have been sent just now. Please wait a few minutes and try again.' };
 // What the photo reader has written so far, as the items it has named: [{ name, count }] and the groups it has started
@@ -2702,7 +2702,7 @@ function phSpot(text) {
   const items = [], groups = [];
   for (const m of text.matchAll(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"count"\s*:\s*(\d+)/g)) items.push({ name: cleanName(m[1].replace(/\\(.)/g, '$1')).trim(), count: Math.min(99, +m[2]) });
   for (const m of text.matchAll(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"items"/g)) groups.push(cleanName(m[1].replace(/\\(.)/g, '$1')).trim());
-  return { items: items.filter(i => i.name), groups: groups.filter(Boolean), sized: /"basis"\s*:/.test(text), quality: /"photo_quality"\s*:/.test(text) };
+  return { items: items.filter(i => i.name), groups: groups.filter(Boolean), sized: /"basis"\s*:/.test(text) };
 }
 // Show the items as they are spotted: a chip for each (the newest few), and what the reader is doing now
 function phShowSpotted(sp) {
@@ -2770,13 +2770,9 @@ function phAddSpace() { phs.groups.push({ name: 'New space', on: true, items: [n
 // focus: optionally, which group's newest item name to select once the cards are drawn
 function phRenderResults(focus) {
   $('#ph-thumb').src = phs.url || '';
-  $('#ph-quality').textContent = phs.meta.quality === 'good' ? 'The photo was clear enough to work from.' : 'The photo was not ideal. ' + (phs.meta.tip || 'A top-down shot with things spread out works best.');
   const embed = isEmbed();
   $('#ph-sizebox').hidden = embed; $('#ph-warn').hidden = embed; $('#ph-embed-size').hidden = !embed;
-  if (embed) {                                                // the drawer size comes from the order form: the photo's estimate is only a cross-check
-    $('#ph-embed-size').textContent = `Your drawer: ${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″ (the size you entered).`
-      + (Math.abs(phs.size.w / (state.dims.w / IN) - 1) > 0.2 || Math.abs(phs.size.l / (state.dims.l / IN) - 1) > 0.2 ? ` The photo looks like a drawer about ${fmt2(phs.size.w)}″ × ${fmt2(phs.size.l)}″, so please double-check your measurements.` : '');
-  }
+  if (embed) $('#ph-embed-size').textContent = `Your drawer: ${fmtIn(state.dims.w)}″ × ${fmtIn(state.dims.l)}″ × ${fmtIn(state.dims.h)}″ (the size you entered).`;      // the size comes from the order form, confirmed before the photo was read
   for (const k of ['w', 'l', 'h']) $('#ph-' + k).value = phs.size[k];
   $('#ph-basis').textContent = `${phs.meta.conf ? 'Confidence: ' + phs.meta.conf + '. ' : ''}${phs.meta.basis}`;
   const box = $('#ph-groups'); box.innerHTML = '';
