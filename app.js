@@ -2691,7 +2691,22 @@ function phRenderResults() {
     const ul = card.querySelector('ul');
     g.items.forEach((it, ii) => {
       const li = document.createElement('li');
-      li.innerHTML = `<span>${it.count} × ${esc(it.name)}</span><span class="ph-sz">${it.length_in} × ${it.width_in} in <button type="button" class="ph-x" aria-label="Remove ${esc(it.name)}">×</button></span>`;
+      li.innerHTML = `<input type="number" class="ph-in ph-count" min="1" max="99" step="1" inputmode="numeric" value="${it.count}" aria-label="How many ${esc(it.name)}">`
+        + `<input type="text" class="ph-in ph-itname" maxlength="40" value="${esc(it.name)}" aria-label="Name of this item">`
+        + `<button type="button" class="ph-x" aria-label="Remove ${esc(it.name)}">×</button>`
+        + `<div class="ph-sizes"><label><span>Length, inches</span><input type="number" class="ph-in ph-len" min="0.2" max="40" step="0.25" inputmode="decimal" value="${it.length_in}" aria-label="Length of ${esc(it.name)} in inches, its longest side"></label>`
+        + `<label><span>Width, inches</span><input type="number" class="ph-in ph-wid" min="0.1" max="30" step="0.25" inputmode="decimal" value="${it.width_in}" aria-label="Width of ${esc(it.name)} in inches"></label></div>`;
+      const num = (el, lo, hi, dflt, digits) => { const v = parseFloat(el.value); const n = Number.isFinite(v) ? clamp(v, lo, hi) : dflt; return digits === 0 ? Math.round(n) : Math.round(n * 100) / 100; };
+      const [cnt, nm, , sizes] = li.children, len = sizes.querySelector('.ph-len'), wid = sizes.querySelector('.ph-wid');
+      cnt.addEventListener('change', () => { it.count = num(cnt, 1, 99, it.count, 0); cnt.value = it.count; });
+      nm.addEventListener('input', () => { it.name = cleanName(nm.value).trim() || 'item'; });
+      nm.addEventListener('change', () => { nm.value = it.name; });
+      const sizeChanged = () => {                                      // the longest side stays the length
+        let l = num(len, 0.2, 40, it.length_in), w = num(wid, 0.1, 30, it.width_in);
+        if (w > l) [l, w] = [w, l];
+        it.length_in = l; it.width_in = w; len.value = l; wid.value = w;
+      };
+      len.addEventListener('change', sizeChanged); wid.addEventListener('change', sizeChanged);
       li.querySelector('.ph-x').addEventListener('click', () => { g.items.splice(ii, 1); if (!g.items.length) g.on = false; phRenderResults(); });
       ul.appendChild(li);
     });

@@ -68,7 +68,7 @@
 [data-theme="obd"] .link-btn:hover { background: var(--accent-soft); }
 [data-theme="obd"] .tool { padding: 7px 12px; }
 [data-theme="obd"] .tool:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
-[data-theme="obd"] select, [data-theme="obd"] .dec-input, [data-theme="obd"] .text-input, [data-theme="obd"] .ph-dims input, [data-theme="obd"] .ph-name, [data-theme="obd"] .pop-name input {
+[data-theme="obd"] select, [data-theme="obd"] .dec-input, [data-theme="obd"] .text-input, [data-theme="obd"] .ph-dims input, [data-theme="obd"] .ph-name, [data-theme="obd"] .ph-in, [data-theme="obd"] .pop-name input {
   border-radius: 12px; border-color: #d9d2ca; font-weight: 500; font-size: 16px;
 }
 [data-theme="obd"] .dec-input:focus, [data-theme="obd"] .text-input:focus { outline-color: var(--ink); }
