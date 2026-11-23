@@ -2451,6 +2451,74 @@ function photoRows(gs, W, H) {
   const t = photoStrips(gs, H, W);
   return { cells: t.cells.map(c => ({ g: c.g, x: c.y, y: c.x, w: c.h, h: c.w })), divs: t.divs.map(d => ({ axis: d.axis === 'v' ? 'h' : 'v', pos: d.pos, s: d.s, e: d.e })) };
 }
+// How well a set of divider lines suits the groups: each group's anchor point must fall in its own space (and every space must hold one)
+function photoLinesScore(lines, anchors, R) {
+  const faces = regionFaces(R.x, R.y, R.w, R.h, lines.map(lineRect));
+  if (faces.length !== anchors.length || faces.some(f => f.poly)) return { score: Infinity };
+  const used = new Set(); let score = 0; const per = [];
+  for (const a of anchors) {
+    const f = faces.find(q => a.cx > q.x && a.cx < q.x + q.w && a.cy > q.y && a.cy < q.y + q.h);
+    if (!f || used.has(f)) return { score: Infinity };
+    used.add(f); const v = photoScore(a.g, f.w, f.h) + (Math.min(f.w, f.h) < 0.75 ? 99 : 0); per.push(v); score += v;
+  }
+  return { score, faces, per };
+}
+// Pairs of dividers that run into the opposite sides of the same crossing divider: [{ p, a, b }]
+function crossCandidates(lines) {
+  const out = [];
+  for (const p of lines) for (const a of lines) {
+    if (a.axis === p.axis || Math.abs(a.e - p.pos) > EPS) continue;           // a ends at p's near side
+    for (const b of lines) {
+      if (b === a || b.axis !== a.axis || Math.abs(b.s - (p.pos + WALL)) > EPS) continue;       // b starts at its far side
+      const lo = Math.min(a.pos, b.pos), hi = Math.max(a.pos, b.pos);
+      if (p.s < lo - EPS && p.e > hi + WALL + EPS) out.push({ p, a, b });          // p carries on past both: a cross, not a corner
+    }
+  }
+  return out;
+}
+const countCrosses = lines => crossCandidates(lines).filter(({ a, b }) => Math.abs(a.pos - b.pos) < EPS).length;
+const CROSS_NEAR = { min: 2, frac: 0.12 };                       // how far apart (in) two dividers may be and still be put in line: at least 1 in, or this share of the drawer
+// Where two dividers on opposite sides of a crossing divider nearly line up, put them on one line so they form a cross (easier to make and
+// neater) if the spaces still suit their groups. Returns the lines and the score they have.
+function alignCrosses(lines, anchors, R) {
+  let cur = lines.map(l => ({ ...l })), start = photoLinesScore(cur, anchors, R), best = start.score;
+  for (let pass = 0; pass < 12; pass++) {
+    let changed = false;
+    for (const { p, a, b } of crossCandidates(cur)) {
+      const d = Math.abs(a.pos - b.pos);
+      if (d < EPS || d > Math.max(CROSS_NEAR.min, CROSS_NEAR.frac * (a.axis === 'h' ? R.h : R.w))) continue;
+      const ia = cur.indexOf(a), ib = cur.indexOf(b);
+      const la = a.e - a.s, lb = b.e - b.s, t = Math.round((a.pos * la + b.pos * lb) / (la + lb) * 16) / 16;
+      for (const target of [t, a.pos, b.pos]) {                                // the middle, or either one's own position
+        const trial = cur.map(l => ({ ...l }));
+        const moved = new Set();
+        const chain = start => {                                           // the lines in a row with this one through crossings move together
+          const q = [start];
+          while (q.length) {
+            const m = q.pop(); if (moved.has(m)) continue; moved.add(m);
+            for (const o of trial) if (o !== m && o.axis === m.axis && Math.abs(o.pos - m.pos) < EPS && trial.some(x => x.axis !== m.axis && ((Math.abs(m.e - x.pos) < EPS && Math.abs(o.s - (x.pos + WALL)) < EPS) || (Math.abs(o.e - x.pos) < EPS && Math.abs(m.s - (x.pos + WALL)) < EPS)))) q.push(o);
+          }
+        };
+        chain(trial[ia]); chain(trial[ib]);
+        const olds = new Map([...moved].map(m => [m, m.pos]));
+        for (const m of moved) {
+          const old = olds.get(m);
+          for (const q of trial) {
+            if (q.axis === m.axis || moved.has(q)) continue;
+            if (Math.abs(q.s - (old + WALL)) < EPS) q.s = target + WALL; else if (Math.abs(q.e - old) < EPS) q.e = target;
+          }
+        }
+        for (const m of moved) m.pos = target;
+        const r = photoLinesScore(trial, anchors, R);
+        // every group's space must still suit it about as well as before (a little give for the area, none for the length of its longest thing)
+        if (Number.isFinite(r.score) && r.per.every((v, i) => v <= Math.max(start.per ? start.per[i] : 0, 0.4))) { cur = trial; best = r.score; changed = true; break; }
+      }
+      if (changed) break;
+    }
+    if (!changed) break;
+  }
+  return { lines: cur, score: best };
+}
 const PHOTO_VARIANTS = { grid: 'A grid, each space sized to what it holds', strips: 'Spaces running front to back, side by side, for long things', rows: 'Spaces running side to side, stacked, for wide things' };
 // Up to `max` different layouts for the groups in the drawer's floor R, best first:
 // [{ plan, cells: [{ name, cx, cy }], variant, score, spaces }] (empty when nothing fits). When the groups are too many for the drawer the
@@ -2469,18 +2537,25 @@ function suggestLayouts(groups, R, max = 3) {
     for (const t of raw) {
       t.score = t.r.cells.reduce((s, c) => s + photoScore(c.g, c.w, c.h), 0) + (t.r.cells.length < gs.length || t.r.divs.length < gs.length - 1 || t.r.cells.some(c => Math.min(c.w, c.h) < 0.75) ? 99 : 0);
       if (t.score >= 99 && gs.length > 1) continue;                       // too cramped to cut into that many spaces
+      let lines = t.r.divs.map(d => (d.axis === 'v' ? { axis: 'v', pos: R.x + d.pos, s: R.y + d.s, e: R.y + d.e } : { axis: 'h', pos: R.y + d.pos, s: R.x + d.s, e: R.x + d.e }));
+      let anchors = t.r.cells.map(c => ({ g: c.g, cx: R.x + c.x + c.w / 2, cy: R.y + c.y + c.h / 2 }));
+      let score = t.score;
+      if (lines.length > 1) {                                             // dividers that nearly line up are made to: a cross
+        const al = alignCrosses(lines, anchors, R);
+        if (Number.isFinite(al.score)) { lines = al.lines; score = al.score; const f = photoLinesScore(lines, anchors, R).faces; anchors = anchors.map(a => { const q = f.find(z => a.cx > z.x && a.cx < z.x + z.w && a.cy > z.y && a.cy < z.y + z.h); return { ...a, cx: q.x + q.w / 2, cy: q.y + q.h / 2 }; }); }
+      }
       const q = v => Math.round(v * 4) / 4;
-      const sig = t.r.divs.map(d => `${d.axis}${q(d.pos)}:${q(d.s)}-${q(d.e)}`).sort().join('|') + '#' + t.r.cells.map(c => `${c.g.name}@${q(c.x + c.w / 2)},${q(c.y + c.h / 2)}`).sort().join('|');
+      const sig = lines.map(d => `${d.axis}${q(d.pos)}:${q(d.s)}-${q(d.e)}`).sort().join('|') + '#' + anchors.map(c => `${c.g.name}@${q(c.cx)},${q(c.cy)}`).sort().join('|');
       if (seen.has(sig)) continue;
-      const lines = t.r.divs.map(d => (d.axis === 'v' ? { axis: 'v', pos: R.x + d.pos, s: R.y + d.s, e: R.y + d.e } : { axis: 'h', pos: R.y + d.pos, s: R.x + d.s, e: R.x + d.e }));
       const plan = finishLines(R, lines, [], []);
       if (!plan) continue;
       seen.add(sig);
-      found.push({ plan, cells: t.r.cells.map(c => ({ name: c.g.name, cx: R.x + c.x + c.w / 2, cy: R.y + c.y + c.h / 2 })), variant: t.variant, score: t.score, spaces: t.r.cells.length, merged: asked - gs.length });
+      const crosses = countCrosses(lines);
+      found.push({ plan, cells: anchors.map(c => ({ name: c.g.name, cx: c.cx, cy: c.cy })), variant: t.variant, score, rank: score - crosses, crosses, spaces: anchors.length, merged: asked - gs.length });
     }
     if (found.length) {                                                    // the best of each kind first, so the choices look different from each other
-      found.sort((a, b) => a.score - b.score);
-      const pick = ['grid', 'strips', 'rows'].map(v => found.find(f => f.variant === v)).filter(Boolean).sort((a, b) => a.score - b.score).slice(0, max);
+      found.sort((a, b) => a.rank - b.rank);
+      const pick = ['grid', 'strips', 'rows'].map(v => found.find(f => f.variant === v)).filter(Boolean).sort((a, b) => a.rank - b.rank).slice(0, max);
       for (const f of found) if (pick.length < max && !pick.includes(f)) pick.push(f);
       return pick;
     }
@@ -2738,7 +2813,7 @@ function phRenderOptions() {
   $('#ph-opts-note').textContent = n > 1 ? `Here are ${n} ways to arrange your spaces. Pick the one you like; you can change anything in the planner afterwards.` : 'Here is the layout we suggest. You can change anything in the planner afterwards.';
   phs.options.forEach((o, i) => {
     const card = document.createElement('div'); card.className = 'ph-opt';
-    card.innerHTML = `<div class="ph-optname"><b>Option ${i + 1}</b>${i === 0 && n > 1 ? '<span class="ph-best">Our pick</span>' : ''}</div>${o.thumb}<p class="note">${esc(PHOTO_VARIANTS[o.variant])}. ${o.spaces} ${o.spaces === 1 ? 'space' : 'spaces'}.${o.merged ? ' Some small things share a space to fit.' : ''}</p><button type="button" class="btn primary">Use this layout</button>`;
+    card.innerHTML = `<div class="ph-optname"><b>Option ${i + 1}</b>${i === 0 && n > 1 ? '<span class="ph-best">Our pick</span>' : ''}</div>${o.thumb}<p class="note">${esc(PHOTO_VARIANTS[o.variant])}. ${o.spaces} ${o.spaces === 1 ? 'space' : 'spaces'}${o.crosses ? `, ${o.crosses} ${o.crosses === 1 ? 'cross joint' : 'cross joints'}` : ''}.${o.merged ? ' Some small things share a space to fit.' : ''}</p><button type="button" class="btn primary">Use this layout</button>`;
     card.querySelector('button').addEventListener('click', () => {
       applyOption(o);
       closePhoto(); showNote('Suggested layout loaded. Undo goes back to what you had.', 'info', 7000);
